@@ -1,35 +1,12 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# C++ build artifacts
 build/
 CMakeCache.txt
 CMakeFiles/
 Makefile
 cmake_install.cmake
-*.cmake
+*.o
 *.a
 *.so
-*.o
-*.exe
-*.dll
-*.lib
-
-# Logs and temp files
+__pycache__/
+*.pyc
+*.pyo
 *.log
-*.tmp
-/tmp/*
-/flight.log
-
-# Misc
-.DS_Store
-Thumbs.db
