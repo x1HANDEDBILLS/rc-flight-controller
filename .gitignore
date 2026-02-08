@@ -1,12 +1,47 @@
+# C++ build artifacts
+*.o
+*.out
+*.exe
+*.a
+*.so
+*.dylib
 build/
+bin/
+cmake_build/
+*.cmake
 CMakeCache.txt
 CMakeFiles/
 Makefile
+*.cmake
 cmake_install.cmake
-*.o
-*.a
-*.so
+
+# Python cache / temp
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Temp files
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Logs / temp data
 *.log
+/tmp/*
+/home/pi4/.rc-flight-controller/settings.json  # optional - remove if you want to track it
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
