@@ -1,8 +1,8 @@
-# logic_process.py - touchscreen input with reconnect
-
+# logic_process.py - touchscreen input with resolution-aware scaling
 from evdev import InputDevice, ecodes, list_devices
 from select import select
 import time
+from config import SCREEN_WIDTH, SCREEN_HEIGHT # Added this for proper scaling
 
 def logic_process(conn):
     touch_dev = None
@@ -48,17 +48,23 @@ def logic_process(conn):
     if not try_open_touch():
         print("No touchscreen found initially.")
         conn.send([999.0, False, 0, 0])
-        return
-
-    try:
-        touch_dev.grab()
-        print("Device grabbed exclusively")
-    except Exception as e:
-        print(f"Grab failed: {e}")
+        # We don't return here so it can keep re-scanning in the loop
+    else:
+        try:
+            touch_dev.grab()
+            print(f"Device {touch_dev.name} grabbed exclusively")
+        except Exception as e:
+            print(f"Grab failed: {e}")
 
     is_down = False
     tx = ty = 0
     last_scan_attempt = time.time()
+
+    # Get max values of the digitizer for accurate scaling
+    abs_info_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X) if touch_dev else None
+    max_x = abs_info_x.max if abs_info_x else 4095
+    abs_info_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y) if touch_dev else None
+    max_y = abs_info_y.max if abs_info_y else 4095
 
     while True:
         if touch_dev is None:
@@ -68,6 +74,9 @@ def logic_process(conn):
                 if try_open_touch():
                     try:
                         touch_dev.grab()
+                        # Refresh digitizer max values on reconnect
+                        max_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X).max
+                        max_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y).max
                     except:
                         pass
             time.sleep(0.5)
@@ -75,23 +84,22 @@ def logic_process(conn):
 
         try:
             t_start = time.perf_counter_ns()
-
             r, _, _ = select([touch_dev.fd], [], [], 0.012)
 
             if r:
                 for event in touch_dev.read():
                     if event.type == ecodes.EV_ABS:
+                        # Scaled to actual SCREEN size defined in config.py
                         if event.code == ecodes.ABS_MT_POSITION_X:
-                            tx = int(event.value * 1024 / 4095)
+                            tx = int(event.value * SCREEN_WIDTH / max_x)
                         elif event.code == ecodes.ABS_MT_POSITION_Y:
-                            ty = int(event.value * 600 / 4095)
+                            ty = int(event.value * SCREEN_HEIGHT / max_y)
                     elif event.type == ecodes.EV_KEY:
                         if event.code == ecodes.BTN_TOUCH:
                             is_down = bool(event.value)
                     elif event.type == ecodes.EV_SYN and event.code == ecodes.SYN_REPORT:
                         latency_ms = (time.perf_counter_ns() - t_start) / 1_000_000
                         conn.send([latency_ms, is_down, tx, ty])
-
             else:
                 latency_ms = (time.perf_counter_ns() - t_start) / 1_000_000
                 conn.send([latency_ms, is_down, tx, ty])

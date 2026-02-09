@@ -1,0 +1,29 @@
+{
+    "channel_map": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+    ],
+    "split_config": {
+        "target_ch": -1,
+        "pos_id": 22,
+        "neg_id": 22,
+        "pos_center": false,
+        "pos_reverse": false,
+        "neg_center": false,
+        "neg_reverse": false
+    }
+}

@@ -1,158 +1,22 @@
 {
     "tuning": {
-        "left_deadzone": 0.05,
-        "right_deadzone": 0.05,
+        "left_deadzone": 0.5,
+        "left_h_id": 0,
+        "left_v_id": 1,
+        "right_deadzone": 0.5,
+        "right_h_id": 2,
+        "right_v_id": 3,
+        "curve_type": 0,
+        "expo": 0.0,
+        "smoothing": 0.2,
+        "global_rate": 1.0,
+        "cine_on": true,
+        "cine_intensity": 10.0,
+        "curve_lh_id": 0,
+        "curve_lv_id": 1,
+        "curve_rh_id": 2,
+        "curve_rv_id": 3,
         "sensitivity": 1.0,
         "lowpass_alpha": 0.2
-    },
-    "mapping": {
-        "defaults": [
-            {
-                "ch": 0,
-                "name": "Roll",
-                "src": 0
-            },
-            {
-                "ch": 1,
-                "name": "Pitch",
-                "src": 1
-            },
-            {
-                "ch": 2,
-                "name": "Yaw",
-                "src": 2
-            },
-            {
-                "ch": 3,
-                "name": "Throttle",
-                "src": 3
-            },
-            {
-                "ch": 4,
-                "name": "LT_Trigger",
-                "src": 4
-            },
-            {
-                "ch": 5,
-                "name": "RT_Trigger",
-                "src": 5
-            },
-            {
-                "ch": 6,
-                "name": "AUX_1",
-                "src": 6
-            },
-            {
-                "ch": 7,
-                "name": "AUX_2",
-                "src": 7
-            },
-            {
-                "ch": 8,
-                "name": "AUX_3",
-                "src": 8
-            },
-            {
-                "ch": 9,
-                "name": "AUX_4",
-                "src": 9
-            },
-            {
-                "ch": 10,
-                "name": "AUX_5",
-                "src": 10
-            },
-            {
-                "ch": 11,
-                "name": "AUX_6",
-                "src": 11
-            },
-            {
-                "ch": 12,
-                "name": "AUX_7",
-                "src": 12
-            },
-            {
-                "ch": 13,
-                "name": "AUX_8",
-                "src": 13
-            },
-            {
-                "ch": 14,
-                "name": "AUX_9",
-                "src": 14
-            },
-            {
-                "ch": 15,
-                "name": "AUX_10",
-                "src": 15
-            }
-        ],
-        "custom": [
-            {
-                "ch": 0,
-                "src": 0
-            },
-            {
-                "ch": 1,
-                "src": 1
-            },
-            {
-                "ch": 2,
-                "src": 2
-            },
-            {
-                "ch": 3,
-                "src": 3
-            },
-            {
-                "ch": 4,
-                "src": 4
-            },
-            {
-                "ch": 5,
-                "src": 5
-            },
-            {
-                "ch": 6,
-                "src": 6
-            },
-            {
-                "ch": 7,
-                "src": 7
-            },
-            {
-                "ch": 8,
-                "src": 8
-            },
-            {
-                "ch": 9,
-                "src": 9
-            },
-            {
-                "ch": 10,
-                "src": 10
-            },
-            {
-                "ch": 11,
-                "src": 11
-            },
-            {
-                "ch": 12,
-                "src": 12
-            },
-            {
-                "ch": 13,
-                "src": 13
-            },
-            {
-                "ch": 14,
-                "src": 14
-            },
-            {
-                "ch": 15,
-                "src": 15
-            }
-        ]
     }
 }

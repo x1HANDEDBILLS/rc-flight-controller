@@ -1,4 +1,3 @@
-# input_tuning_panel.py - Paginated Input Tuning with High-Speed Streaming
 import pygame
 import time
 import json
@@ -7,175 +6,233 @@ import socket
 from config import *
 from ui_helpers import draw_numeric_stepper
 
-# Match the file path used by the C++ engine
-TUNING_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "inputtuning.json")
-
-# Global cache to prevent race conditions during rapid clicking
-cached_config = {}
-
-# --- UDP Socket Setup for Instant Tuning ---
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5005
+# --- CONFIG & PERSISTENCE ---
+TUNING_FILE = "/home/pi4/rc-flight-controller/src/config/inputtuning.json"
+UDP_IP, UDP_PORT = "127.0.0.1", 5005
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-def stream_to_cpp(key, value_percent):
-    """Sends value to C++ instantly via UDP."""
-    try:
-        # Convert percent (5) to decimal (0.05) for C++
-        message = f"{key}:{value_percent / 100.0}"
-        sock.sendto(message.encode(), (UDP_IP, UDP_PORT))
-    except:
-        pass 
+# Shared raw input array (updated by main loop)
+RAW_INPUTS = [0.0] * 23 
 
-# Internal Pagination State
+TUNING_STATE = {
+    "left_deadzone": 0.5, "left_h_id": 0, "left_v_id": 1,
+    "right_deadzone": 0.5, "right_h_id": 2, "right_v_id": 3,
+    "curve_type": 0, "expo": 0.0,
+    "smoothing": 0.2, "global_rate": 1.0,
+    "cine_on": False, 
+    "cine_intensity": 1.0, 
+    "curve_lh_id": 0, "curve_lv_id": 1, "curve_rh_id": 2, "curve_rv_id": 3
+}
+
+CURVE_NAMES = ["LINEAR", "STANDARD", "DYNAMIC", "EXTREME"]
+
+# UI State
+selector_active_for = None
+curve_menu_open = False
+last_overlay_toggle = 0.0 
 current_page = 0
 last_interaction_time = 0
 
-# Track button states for the stepper logic
+# Input tracking for steppers
 prev_states = {
-    "l_dec": False, "l_inc": False,
-    "r_dec": False, "r_inc": False
+    "l_dec": False, "l_inc": False, "r_dec": False, "r_inc": False,
+    "e_dec": False, "e_inc": False, "s_dec": False, "s_inc": False,
+    "g_dec": False, "g_inc": False, "ci_dec": False, "ci_inc": False
 }
-last_release = {
-    "l_dec": 0.0, "l_inc": 0.0,
-    "r_dec": 0.0, "r_inc": 0.0
-}
+last_release = {k: 0.0 for k in prev_states.keys()}
 
-def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, panel_visible=None):
-    global LEFT_STICK_DEADZONE, RIGHT_STICK_DEADZONE
-    global current_page, last_interaction_time
-    global prev_states, last_release
-
-    # Title based on page
-    title_font = pygame.font.SysFont("monospace", 28, bold=True)
-    page_titles = ["Deadzone Tuning", "Sensitivity & Rates", "Expo Curves"]
-    title = title_font.render(f"Input: {page_titles[current_page]}", True, (255, 255, 255))
-    screen.blit(title, (rect.centerx - title.get_width() // 2, rect.y + 30))
-
-    # --- PAGE RENDERING ---
-    if current_page == 0:
-        # Page 1: Deadzones
-        l_x, l_y = rect.left + 50, rect.y + 120
-        r_x, r_y = rect.left + 50, l_y + 100
-
-        l_dec_r, l_dec_p, l_inc_r, l_inc_p = draw_numeric_stepper(
-            screen, l_x, l_y, LEFT_STICK_DEADZONE, "Left Deadzone", touch_down, touch_x, touch_y
-        )
-        r_dec_r, r_dec_p, r_inc_r, r_inc_p = draw_numeric_stepper(
-            screen, r_x, r_y, RIGHT_STICK_DEADZONE, "Right Deadzone", touch_down, touch_x, touch_y
-        )
-
-        # Logic for Deadzone adjustments
-        now = time.time()
-        
-        # Left Stick Logic
-        if not l_dec_p and prev_states["l_dec"] and (now - last_release["l_dec"]) >= 0.05:
-            LEFT_STICK_DEADZONE = max(0, LEFT_STICK_DEADZONE - 1)
-            stream_to_cpp("L_DZ", LEFT_STICK_DEADZONE) 
-            save_settings()                            
-            last_release["l_dec"] = now
-        if not l_inc_p and prev_states["l_inc"] and (now - last_release["l_inc"]) >= 0.05:
-            LEFT_STICK_DEADZONE = min(100, LEFT_STICK_DEADZONE + 1)
-            stream_to_cpp("L_DZ", LEFT_STICK_DEADZONE)
-            save_settings()
-            last_release["l_inc"] = now
-            
-        # Right Stick Logic
-        if not r_dec_p and prev_states["r_dec"] and (now - last_release["r_dec"]) >= 0.05:
-            RIGHT_STICK_DEADZONE = max(0, RIGHT_STICK_DEADZONE - 1)
-            stream_to_cpp("R_DZ", RIGHT_STICK_DEADZONE)
-            save_settings()
-            last_release["r_dec"] = now
-        if not r_inc_p and prev_states["r_inc"] and (now - last_release["r_inc"]) >= 0.05:
-            RIGHT_STICK_DEADZONE = min(100, RIGHT_STICK_DEADZONE + 1)
-            stream_to_cpp("R_DZ", RIGHT_STICK_DEADZONE)
-            save_settings()
-            last_release["r_inc"] = now
-        
-        prev_states["l_dec"], prev_states["l_inc"] = l_dec_p, l_inc_p
-        prev_states["r_dec"], prev_states["r_inc"] = r_dec_p, r_inc_p
-
-    else:
-        font = pygame.font.SysFont("monospace", 20, bold=True)
-        txt = font.render("Advanced Tuning Coming Soon", True, (100, 100, 100))
-        screen.blit(txt, (rect.centerx - txt.get_width()//2, rect.centery))
-
-    # --- NAVIGATION ARROWS & DOTS ---
-    arrow_w, arrow_h = 60, 45
-    prev_rect = pygame.Rect(rect.centerx - 70, rect.bottom - 70, arrow_w, arrow_h)
-    next_rect = pygame.Rect(rect.centerx + 10, rect.bottom - 70, arrow_w, arrow_h)
-
-    p_pres = touch_down and prev_rect.collidepoint(touch_x, touch_y)
-    pygame.draw.rect(screen, (70, 70, 80) if p_pres else (40, 40, 50), prev_rect, border_radius=10)
-    pygame.draw.polygon(screen, (255, 255, 255), [(prev_rect.centerx+10, prev_rect.centery-10), (prev_rect.centerx-10, prev_rect.centery), (prev_rect.centerx+10, prev_rect.centery+10)])
-    
-    n_pres = touch_down and next_rect.collidepoint(touch_x, touch_y)
-    pygame.draw.rect(screen, (70, 70, 80) if n_pres else (40, 40, 50), next_rect, border_radius=10)
-    pygame.draw.polygon(screen, (255, 255, 255), [(next_rect.centerx-10, next_rect.centery-10), (next_rect.centerx+10, next_rect.centery), (next_rect.centerx-10, next_rect.centery+10)])
-
-    for i in range(3):
-        dot_x = rect.centerx - 20 + (i * 20)
-        dot_y = rect.bottom - 85
-        color = (255, 255, 255) if i == current_page else (100, 100, 100)
-        pygame.draw.circle(screen, color, (dot_x, dot_y), 4)
-
-    if (p_pres or n_pres) and (time.time() - last_interaction_time) > 0.25:
-        if p_pres: current_page = (current_page - 1) % 3
-        if n_pres: current_page = (current_page + 1) % 3
-        last_interaction_time = time.time()
+def stream_to_cpp(key, value):
+    """Sends tuning updates to the C++ Flight Core via UDP."""
+    try:
+        val = int(value) if isinstance(value, bool) else value
+        message = f"{key}:{val}"
+        sock.sendto(message.encode(), (UDP_IP, UDP_PORT))
+    except Exception as e:
+        pass 
 
 def save_settings():
-    """Saves to inputtuning.json safely using a memory cache and atomic replace."""
-    global cached_config
-    
-    # Update the tuning block in our memory cache
-    cached_config["tuning"] = {
-        "left_deadzone": LEFT_STICK_DEADZONE / 100.0,
-        "right_deadzone": RIGHT_STICK_DEADZONE / 100.0,
-        "sensitivity": 1.0,
-        "lowpass_alpha": 0.2
-    }
-
-    os.makedirs(os.path.dirname(TUNING_FILE), exist_ok=True)
-    
-    # Write to a temporary file first to prevent corruption during rapid clicking
-    tmp_file = TUNING_FILE + ".tmp"
+    """Saves current tuning state to JSON."""
     try:
-        with open(tmp_file, 'w') as f:
-            json.dump(cached_config, f, indent=4)
-        # Atomic swap: this prevents the file from ever being "empty" or "0.01"
-        os.replace(tmp_file, TUNING_FILE)
+        os.makedirs(os.path.dirname(TUNING_FILE), exist_ok=True)
+        with open(TUNING_FILE, 'w') as f:
+            json.dump({"tuning": TUNING_STATE}, f, indent=4)
     except Exception as e:
-        print(f"Failed to save settings: {e}")
+        pass
 
 def load_settings():
-    """Initial load from disk into the memory cache."""
-    global LEFT_STICK_DEADZONE, RIGHT_STICK_DEADZONE, cached_config
+    """Loads tuning state from JSON on startup."""
     if os.path.exists(TUNING_FILE):
         try:
             with open(TUNING_FILE, 'r') as f:
-                cached_config = json.load(f)
-                t = cached_config.get("tuning", {})
-                LEFT_STICK_DEADZONE = int(t.get("left_deadzone", 0.05) * 100)
-                RIGHT_STICK_DEADZONE = int(t.get("right_deadzone", 0.05) * 100)
-        except:
-            cached_config = {}
-            LEFT_STICK_DEADZONE = 5
-            RIGHT_STICK_DEADZONE = 5
+                data = json.load(f)
+                if "tuning" in data: TUNING_STATE.update(data["tuning"])
+        except Exception as e:
+            pass
 
-# --- HELPER FUNCTIONS FOR MAIN.PY ---
+load_settings()
 
-def get_tuned_left_stick(raw_lx, raw_ly):
-    dead = LEFT_STICK_DEADZONE / 100.0
-    return apply_deadzone(raw_lx, dead), apply_deadzone(raw_ly, dead)
+def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_signals=None):
+    global RAW_INPUTS, current_page, last_interaction_time, selector_active_for, curve_menu_open, last_overlay_toggle
+    if raw_signals: RAW_INPUTS = raw_signals
 
-def get_tuned_right_stick(raw_rx, raw_ry):
-    dead = RIGHT_STICK_DEADZONE / 100.0
-    return apply_deadzone(raw_rx, dead), apply_deadzone(raw_ry, dead)
+    # Handle Overlays first
+    if selector_active_for:
+        draw_id_selector_overlay(screen, rect, touch_down, touch_x, touch_y)
+        return
+    if curve_menu_open:
+        draw_curve_selector_overlay(screen, rect, touch_down, touch_x, touch_y)
+        return
 
-def apply_deadzone(value, deadzone):
-    normalized = value / 32768.0
-    abs_val = abs(normalized)
-    if abs_val < deadzone: return 0
-    scaled = (abs_val - deadzone) / (1.0 - deadzone)
-    return int(scaled * 32768.0 * (1 if normalized >= 0 else -1))
+    # Draw Title
+    title_font = pygame.font.SysFont("monospace", 26, bold=True)
+    title = title_font.render("Input Signal Tuning", True, (255, 255, 255))
+    screen.blit(title, (rect.centerx - title.get_width() // 2, rect.y + 20))
+
+    # --- PAGE 0: ROUTING & EXPO ---
+    if current_page == 0:
+        l_x, l_y = rect.left + 65, rect.y + 100 
+        r_x, r_y = rect.left + 65, l_y + 80  
+        
+        l_res = draw_numeric_stepper(screen, l_x, l_y, TUNING_STATE["left_deadzone"], "Left Deadzone", touch_down, touch_x, touch_y)
+        r_res = draw_numeric_stepper(screen, r_x, r_y, TUNING_STATE["right_deadzone"], "Right Deadzone", touch_down, touch_x, touch_y)
+        
+        draw_mapper_style_row(screen, l_x + 315, l_y - 8, "left_h_id", "left_v_id", touch_down, touch_x, touch_y)
+        draw_mapper_style_row(screen, r_x + 315, r_y - 8, "right_h_id", "right_v_id", touch_down, touch_x, touch_y)
+
+        # Curve Algorithm Selector
+        curve_btn = pygame.Rect(rect.left + 10, r_y + 110, 220, 60)
+        pygame.draw.rect(screen, (40, 44, 52), curve_btn, border_radius=12)
+        pygame.draw.rect(screen, (255, 215, 0), curve_btn, 2, border_radius=12)
+        c_val = pygame.font.SysFont("monospace", 18, bold=True).render(CURVE_NAMES[TUNING_STATE["curve_type"]], True, (255, 255, 255))
+        screen.blit(c_val, (curve_btn.centerx - c_val.get_width()//2, curve_btn.centery - c_val.get_height()//2))
+        lbl_c = pygame.font.SysFont("monospace", 12, bold=True).render("RESPONSE ALGO", True, (150, 150, 150))
+        screen.blit(lbl_c, (curve_btn.x + 5, curve_btn.y - 18))
+
+        # Expo Stepper
+        e_res = draw_numeric_stepper(screen, rect.left + 65, curve_btn.bottom + 50, TUNING_STATE["expo"], "Stick Expo (Negative=Sharp)", touch_down, touch_x, touch_y)
+        
+        # Output Target Mappers
+        target_x = curve_btn.right + 25
+        t_keys = ["curve_lh_id", "curve_lv_id", "curve_rh_id", "curve_rv_id"]
+        t_labels = ["LH", "LV", "RH", "RV"]
+        for i in range(4):
+            draw_single_mapper_box(screen, pygame.Rect(target_x + (i * 125), curve_btn.y, 120, 60), t_keys[i], t_labels[i], touch_down, touch_x, touch_y)
+
+        handle_stepper_input(l_res, r_res, e_res, None, None, None)
+
+        if touch_down and curve_btn.collidepoint(touch_x, touch_y) and (time.time() - last_overlay_toggle > 0.5):
+            curve_menu_open = True; last_overlay_toggle = time.time()
+
+    # --- PAGE 1: FILTERS, RATES, CINEMATIC ---
+    elif current_page == 1:
+        s_x, s_y = rect.left + 65, rect.y + 110
+        g_x, g_y = rect.left + 65, s_y + 90
+        c_y = g_y + 100
+        
+        # Aligned Steppers
+        s_res = draw_numeric_stepper(screen, s_x, s_y, TUNING_STATE["smoothing"], "Input Smoothing (Filter)", touch_down, touch_x, touch_y)
+        g_res = draw_numeric_stepper(screen, g_x, g_y, TUNING_STATE["global_rate"], "Global Rate (Max Speed)", touch_down, touch_x, touch_y)
+        ci_res = draw_numeric_stepper(screen, s_x, c_y, TUNING_STATE["cine_intensity"], "Cinematic Intensity (1-10)", touch_down, touch_x, touch_y)
+        
+        # Cinematic Checkbox (Right-aligned, +10px height shift)
+        draw_cinematic_row(screen, s_x + 350, c_y - 10, touch_down, touch_x, touch_y)
+        
+        handle_stepper_input(None, None, None, s_res, g_res, ci_res)
+
+    draw_page_indicators(screen, rect)
+    draw_navigation(screen, rect, touch_down, touch_x, touch_y)
+
+def draw_cinematic_row(screen, x, y, touch_down, tx, ty):
+    global last_interaction_time
+    box_rect = pygame.Rect(x, y + 10, 45, 45)
+    pygame.draw.rect(screen, (40, 44, 52), box_rect, border_radius=8)
+    pygame.draw.rect(screen, (0, 200, 255), box_rect, 2, border_radius=8)
+    
+    if TUNING_STATE["cine_on"]:
+        # Draw Checkmark
+        pygame.draw.line(screen, (0, 200, 255), (box_rect.x+10, box_rect.y+22), (box_rect.x+20, box_rect.y+32), 4)
+        pygame.draw.line(screen, (0, 200, 255), (box_rect.x+20, box_rect.y+32), (box_rect.x+35, box_rect.y+12), 4)
+
+    if touch_down and box_rect.collidepoint(tx, ty) and (time.time() - last_interaction_time > 0.3):
+        TUNING_STATE["cine_on"] = not TUNING_STATE["cine_on"]
+        stream_to_cpp("CINE_ON", TUNING_STATE["cine_on"])
+        save_settings()
+        last_interaction_time = time.time()
+
+    lbl = pygame.font.SysFont("monospace", 16, bold=True).render("CINEMATIC MODE", True, (0, 200, 255))
+    screen.blit(lbl, (box_rect.right + 15, box_rect.centery - 10))
+
+def draw_page_indicators(screen, rect):
+    for i in range(2): 
+        color = (0, 255, 120) if i == current_page else (60, 60, 70)
+        pygame.draw.circle(screen, color, (rect.centerx - 15 + (i * 30), rect.bottom - 75), 6)
+
+def handle_stepper_input(l, r, e, s, g, ci):
+    global prev_states, last_release
+    now = time.time()
+    checks = []
+    if l: checks.extend([("l_dec", l[1], "left_deadzone", -0.1, 0, 3, "L_DZ"), ("l_inc", l[3], "left_deadzone", 0.1, 0, 3, "L_DZ")])
+    if r: checks.extend([("r_dec", r[1], "right_deadzone", -0.1, 0, 3, "R_DZ"), ("r_inc", r[3], "right_deadzone", 0.1, 0, 3, "R_DZ")])
+    if e: checks.extend([("e_dec", e[1], "expo", -0.05, -1, 1, "EXPO"), ("e_inc", e[3], "expo", 0.05, -1, 1, "EXPO")])
+    if s: checks.extend([("s_dec", s[1], "smoothing", -0.05, 0, 1, "SMOOTH"), ("s_inc", s[3], "smoothing", 0.05, 0, 1, "SMOOTH")])
+    if g: checks.extend([("g_dec", g[1], "global_rate", -0.1, 0.1, 3.0, "RATE"), ("g_inc", g[3], "global_rate", 0.1, 0.1, 3.0, "RATE")])
+    if ci: checks.extend([("ci_dec", ci[1], "cine_intensity", -0.1, 1.0, 10.0, "CINE_VAL"), ("ci_inc", ci[3], "cine_intensity", 0.1, 1.0, 10.0, "CINE_VAL")])
+
+    for key, pressed, target, delta, v_min, v_max, udp_key in checks:
+        if not pressed and prev_states[key] and (now - last_release[key]) >= 0.05:
+            TUNING_STATE[target] = round(max(v_min, min(v_max, TUNING_STATE[target] + delta)), 2)
+            stream_to_cpp(udp_key, TUNING_STATE[target])
+            save_settings(); last_release[key] = now
+        prev_states[key] = pressed
+
+def draw_mapper_style_row(screen, x, y, h_key, v_key, touch_down, tx, ty):
+    for i, k in enumerate([h_key, v_key]):
+        draw_single_mapper_box(screen, pygame.Rect(x + (i * 148), y, 140, 58), k, ["H-AXIS", "V-AXIS"][i], touch_down, tx, ty)
+
+def draw_single_mapper_box(screen, rect, state_key, label, touch_down, tx, ty):
+    global selector_active_for, last_overlay_toggle
+    pygame.draw.rect(screen, (20, 22, 28), rect, border_radius=8)
+    pygame.draw.rect(screen, (0, 255, 120), rect, 2, border_radius=8)
+    id_val = TUNING_STATE.get(state_key)
+    lbl = pygame.font.SysFont("monospace", 14, bold=True).render(label, True, (0, 255, 120))
+    screen.blit(lbl, (rect.x + 8, rect.y + 4))
+    if id_val is not None and id_val < 22:
+        v_txt = pygame.font.SysFont("monospace", 24, bold=True).render(f"ID {id_val:02}", True, (255, 255, 255))
+        screen.blit(v_txt, (rect.x + 8, rect.y + 18))
+        raw_v = int(RAW_INPUTS[id_val]) if id_val < len(RAW_INPUTS) else 0
+        screen.blit(pygame.font.SysFont("monospace", 16, bold=True).render(str(raw_v), True, (0, 255, 100)), (rect.x + 8, rect.bottom - 22))
+    if touch_down and rect.collidepoint(tx, ty) and (time.time() - last_overlay_toggle > 0.5):
+        selector_active_for = state_key; last_overlay_toggle = time.time()
+
+def draw_id_selector_overlay(screen, rect, touch_down, tx, ty):
+    global selector_active_for, last_overlay_toggle
+    overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA); overlay.fill((10, 10, 15, 252)); screen.blit(overlay, (rect.x, rect.y))
+    start_x, start_y = rect.x + 30, rect.y + 60
+    for i in range(23):
+        btn = pygame.Rect(start_x + (i % 5 * 118), start_y + (i // 5 * 63), 110, 55)
+        is_sel = TUNING_STATE.get(selector_active_for) == i
+        pygame.draw.rect(screen, (0, 80, 40) if is_sel else (45, 45, 55), btn, border_radius=6)
+        screen.blit(pygame.font.SysFont("monospace", 17, bold=True).render(f"ID {i:02}", True, (255, 255, 255)), (btn.x + 8, btn.y + 5))
+        if touch_down and btn.collidepoint(tx, ty) and (time.time() - last_overlay_toggle > 0.5):
+            TUNING_STATE[selector_active_for] = i; stream_to_cpp(selector_active_for.upper(), i); save_settings()
+            selector_active_for = None; last_overlay_toggle = time.time()
+
+def draw_curve_selector_overlay(screen, rect, touch_down, tx, ty):
+    global curve_menu_open, last_overlay_toggle
+    overlay = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA); overlay.fill((0, 0, 0, 235)); screen.blit(overlay, (rect.x, rect.y))
+    for i, name in enumerate(CURVE_NAMES):
+        btn = pygame.Rect(rect.centerx - 120, rect.y + 80 + (i * 75), 240, 60)
+        pygame.draw.rect(screen, (0, 255, 150) if TUNING_STATE["curve_type"] == i else (45, 48, 60), btn, border_radius=12)
+        txt = pygame.font.SysFont("monospace", 22, bold=True).render(name, True, (255, 255, 255))
+        screen.blit(txt, (btn.centerx - txt.get_width()//2, btn.centery - txt.get_height()//2))
+        if touch_down and btn.collidepoint(tx, ty) and (time.time() - last_overlay_toggle > 0.5):
+            TUNING_STATE["curve_type"] = i; stream_to_cpp("CURVE", i); save_settings(); curve_menu_open = False; last_overlay_toggle = time.time()
+
+def draw_navigation(screen, rect, touch_down, touch_x, touch_y):
+    global current_page, last_interaction_time
+    for r, is_next in [(pygame.Rect(rect.centerx - 75, rect.bottom - 50, 60, 45), False), (pygame.Rect(rect.centerx + 15, rect.bottom - 50, 60, 45), True)]:
+        pygame.draw.rect(screen, (35, 38, 48), r, border_radius=10)
+        off = 8 if is_next else -8
+        pygame.draw.polygon(screen, (255, 255, 255), [(r.centerx-off, r.centery-10), (r.centerx+off, r.centery), (r.centerx-off, r.centery+10)])
+        if touch_down and r.collidepoint(touch_x, touch_y) and (time.time() - last_interaction_time > 0.3):
+            current_page = (current_page + (1 if is_next else -1)) % 2; last_interaction_time = time.time()
