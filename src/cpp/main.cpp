@@ -1,55 +1,61 @@
-// main.cpp - C++ control loop with live JSON deadzone loading + tuning + CRSF output
-
+// main.cpp - Integrated Flight Controller Engine
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_gamecontroller.h>
 #include <fstream>
 #include <iostream>
 #include <chrono>
 #include <thread>
-#include <iomanip>
-#include <string>
-#include <sstream>
-#include <fcntl.h>
-#include <termios.h>
-#include <unistd.h>
-#include <cstring>
+#include <vector>
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <nlohmann/json.hpp>
 
-// === 1. CLASS DEFINITION ===
-class CRSFSender {
-public:
-    bool begin() { 
-        // In a real scenario, you'd open /dev/ttyAMA0 here
-        std::cout << "CRSF Sender: Communication port initialized." << std::endl;
-        return true; 
-    }
-    
-    void send_tuned_data(int lx, int ly, int rx, int ry, int l2, int r2) {
-        // Logic for packing CRSF frames (typically 420kbaud serial) would go here
-        // For now, it acts as the data sink for our tuned inputs
-    }
-    
-    void close_port() {
-        std::cout << "CRSF Sender: Port closed." << std::endl;
-    }
-};
+// === PROJECT HEADERS ===
+#include "input_tuning.h"
+#include "InputMapper.h"
+#include "InputMixer.h"
+#include "crsf_sender.h"
 
-// === 2. GLOBAL VARIABLES ===
-CRSFSender crsf_sender; 
+// === GLOBAL OBJECTS ===
+CRSFSender crsf_sender;
+InputMapper mapper;
+InputMixer mixer;
 SDL_GameController* controller = nullptr;
 bool controller_connected = false;
 
-int LEFT_DEADZONE = 0;
-int RIGHT_DEADZONE = 0;
+int16_t prev_lx = 0, prev_ly = 0, prev_rx = 0, prev_ry = 0;
 
-// === 3. HELPER FUNCTIONS ===
+float g_deadzone = 0.05f;
+float g_sens     = 1.0f;
+float g_alpha    = 0.2f;
 
+// === CONFIGURATION LOADER ===
+void load_system_config() {
+    std::string path = "/home/pi4/rc-flight-controller/src/config/inputtuning.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+
+    try {
+        nlohmann::json j;
+        file >> j;
+        if (j.contains("tuning")) {
+            g_deadzone = j["tuning"].value("deadzone", 0.05f);
+            g_sens     = j["tuning"].value("sensitivity", 1.0f);
+            g_alpha    = j["tuning"].value("lowpass_alpha", 0.2f);
+        }
+        mapper.load_from_json(path);
+    } catch (const std::exception& e) {
+        std::cerr << "Config Loader Error: " << e.what() << std::endl;
+    }
+}
+
+// === CONTROLLER MANAGEMENT ===
 bool open_controller() {
     for (int i = 0; i < SDL_NumJoysticks(); ++i) {
         if (SDL_IsGameController(i)) {
             controller = SDL_GameControllerOpen(i);
             if (controller) {
-                std::cout << "Controller connected: " << SDL_GameControllerName(controller) << std::endl;
                 controller_connected = true;
                 return true;
             }
@@ -59,140 +65,112 @@ bool open_controller() {
 }
 
 void close_controller() {
-    if (controller) {
-        SDL_GameControllerClose(controller);
-        controller = nullptr;
-    }
+    if (controller) SDL_GameControllerClose(controller);
     controller_connected = false;
 }
 
-int apply_deadzone(int raw, float dead) {
-    // raw is -32768 to 32767
-    float n = raw / 32768.0f;
-    float a = std::abs(n);
-    if (a < dead) return 0;
-    
-    // Scale the remaining throw so it starts immediately after the deadzone
-    float scaled = (a - dead) / (1.0f - dead);
-    return static_cast<int>(scaled * 32768.0f * (n >= 0 ? 1 : -1));
-}
-
-void load_deadzone_settings() {
-    // Shared path with Python UI
-    std::ifstream f("/home/pi4/.rc-flight-controller/settings.json");
-    if (!f.is_open()) return;
-
-    std::stringstream buffer;
-    buffer << f.rdbuf();
-    std::string content = buffer.str();
-    f.close();
-
-    // Safety: If file is empty or too short (Python is currently writing), skip this frame
-    if (content.length() < 20) return;
-
-    try {
-        size_t pos = content.find("\"left_stick_deadzone\":");
-        if (pos != std::string::npos) {
-            pos = content.find(":", pos);
-            size_t end = content.find_first_of(",}", pos);
-            if (end != std::string::npos) {
-                std::string val = content.substr(pos + 1, end - pos - 1);
-                LEFT_DEADZONE = std::stoi(val);
-            }
-        }
-
-        pos = content.find("\"right_stick_deadzone\":");
-        if (pos != std::string::npos) {
-            pos = content.find(":", pos);
-            size_t end = content.find_first_of(",}", pos);
-            if (end != std::string::npos) {
-                std::string val = content.substr(pos + 1, end - pos - 1);
-                RIGHT_DEADZONE = std::stoi(val);
-            }
-        }
-    } catch (...) {
-        // Prevent crash if JSON is malformed during a live-write
-    }
-}
-
-// === 4. MAIN LOOP ===
-
-int main() {
-    if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) {
-        std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
-        return 1;
-    }
-
+// === MAIN ENGINE ===
+int main(int argc, char* argv[]) {
+    if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) return 1;
     crsf_sender.begin();
-
-    if (!open_controller()) {
-        std::cout << "Waiting for controller..." << std::endl;
-    }
+    open_controller();
+    load_system_config();
 
     bool running = true;
     auto last_gui_write = std::chrono::steady_clock::now();
-    auto last_settings_check = std::chrono::steady_clock::now();
-    
-    // Initial load
-    load_deadzone_settings();
+    auto loop_start_time = std::chrono::steady_clock::now();
+    int frame_count = 0;
+    float live_hz = 0.0f;
+
+    std::vector<int> raw_signals(23, 0); 
+    LogicalSignals mapped_output;
 
     while (running) {
+        auto frame_start = std::chrono::steady_clock::now();
+
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) running = false;
-            if (event.type == SDL_CONTROLLERDEVICEADDED) {
-                if (!controller_connected) open_controller();
+            if (event.type == SDL_CONTROLLERDEVICEADDED && !controller_connected) open_controller();
+        }
+
+        if (controller && !SDL_GameControllerGetAttached(controller)) close_controller();
+
+        // --- STAGE 1: RAW GATHERING (TRUE HARDWARE STATE) ---
+        if (controller) {
+            // 1. Get Literal Hardware Axis Values
+            int16_t hw_lx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t hw_ly = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+            int16_t hw_rx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX);
+            int16_t hw_ry = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
+
+            // 2. Save the DIRTY/RAW data so GUI can show jitter/drift
+            raw_signals[0] = hw_lx;
+            raw_signals[1] = hw_ly;
+            raw_signals[2] = hw_rx;
+            raw_signals[3] = hw_ry;
+
+            // 3. Triggers & Buttons (Raw State)
+            raw_signals[4] = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+            raw_signals[5] = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+            for (int i = 0; i < 15; i++) {
+                raw_signals[6 + i] = SDL_GameControllerGetButton(controller, (SDL_GameControllerButton)i) ? 32767 : -32768;
             }
+        } else {
+            std::fill(raw_signals.begin(), raw_signals.end(), 0);
         }
 
-        // Auto-reconnect/Disconnect logic
-        if (controller && !SDL_GameControllerGetAttached(controller)) {
-            std::cout << "Controller lost!" << std::endl;
-            close_controller();
-        }
+        // --- STAGE 2: MAPPING & ROUTING ---
+        mapper.update(raw_signals, mapped_output);
 
-        // Get Inputs
-        int raw_lx = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX) : 0;
-        int raw_ly = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY) : 0;
-        int raw_rx = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX) : 0;
-        int raw_ry = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY) : 0;
-        int raw_l2 = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) : 0;
-        int raw_r2 = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) : 0;
+        // --- STAGE 2.5: APPLY TUNING TO LOGICAL OUTPUTS ---
+        // Roll, Pitch, Yaw, Throttle = indices 0–3 in the channels array
+        mapped_output.channels[0] = apply_tuning(mapped_output.channels[0], g_deadzone, 0.0f, g_sens, false, g_alpha, prev_lx);
+        mapped_output.channels[1] = apply_tuning(mapped_output.channels[1], g_deadzone, 0.0f, g_sens, false, g_alpha, prev_ly);
+        mapped_output.channels[2] = apply_tuning(mapped_output.channels[2], g_deadzone, 0.0f, g_sens, false, g_alpha, prev_rx);
+        mapped_output.channels[3] = apply_tuning(mapped_output.channels[3], g_deadzone, 0.0f, g_sens, false, g_alpha, prev_ry);
 
+        // --- STAGE 3: MIXING ---
+        mixer.process(mapped_output);
+
+        // --- STAGE 4: HARDWARE SEND ---
+        crsf_sender.send_channels(mixer.final_channels);
+
+        // --- STAGE 5: PERFORMANCE & GUI LOGGING ---
         auto now = std::chrono::steady_clock::now();
-        
-        // Live-sync settings from Python every 300ms
-        if (std::chrono::duration<double>(now - last_settings_check).count() >= 0.3) {
-            load_deadzone_settings();
-            last_settings_check = now;
+        auto frame_end = std::chrono::steady_clock::now();
+        float live_latency = std::chrono::duration<float, std::milli>(frame_end - frame_start).count();
+
+        frame_count++;
+        double total_elapsed = std::chrono::duration<double>(frame_end - loop_start_time).count();
+        if (total_elapsed >= 1.0) {
+            live_hz = (float)(frame_count / total_elapsed);
+            frame_count = 0;
+            loop_start_time = frame_end;
         }
 
-        // Apply Tuning
-        int tuned_lx = apply_deadzone(raw_lx, LEFT_DEADZONE / 100.0f);
-        int tuned_ly = apply_deadzone(raw_ly, LEFT_DEADZONE / 100.0f);
-        int tuned_rx = apply_deadzone(raw_rx, RIGHT_DEADZONE / 100.0f);
-        int tuned_ry = apply_deadzone(raw_ry, RIGHT_DEADZONE / 100.0f);
-
-        // Send to hardware
-        crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, raw_l2, raw_r2);
-
-        // Update /tmp/flight_status.txt for the Python GUI (50Hz)
         if (std::chrono::duration<double>(now - last_gui_write).count() >= 0.02) {
             last_gui_write = now;
-            std::ofstream f("/tmp/flight_status.txt");
+            FILE* f = fopen("/tmp/flight_status.txt", "w");
             if (f) {
-                // Formatting matches what Python's main.py expects to parse
-                f << "latency_ms:1.20 rate_hz:500 " 
-                  << "connected:" << (controller_connected ? "1" : "0") << " "
-                  << "lx:" << tuned_lx << " ly:" << tuned_ly << " "
-                  << "rx:" << tuned_rx << " ry:" << tuned_ry << " "
-                  << "l2:" << raw_l2 << " r2:" << raw_r2 << "\n";
-                f.close();
+                fprintf(f, "latency_ms:%.2f rate_hz:%.1f connected:%d", 
+                        live_latency, live_hz, controller_connected ? 1 : 0);
+                
+                // Log all 16 final channels (post-mixing)
+                for (int i = 0; i < 16; i++) {
+                    fprintf(f, " ch%d:%d", i + 1, mixer.final_channels[i]);
+                }
+
+                // Raw hardware values (with possible jitter/drift) for GUI debug row
+                fprintf(f, " raw_lx:%d raw_ly:%d raw_rx:%d raw_ry:%d", 
+                        raw_signals[0], raw_signals[1], raw_signals[2], raw_signals[3]);
+                
+                fprintf(f, "\n");
+                fclose(f);
             }
         }
 
-        // Loop timing (~1000Hz)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::this_thread::sleep_for(std::chrono::microseconds(950));
     }
 
     crsf_sender.close_port();
