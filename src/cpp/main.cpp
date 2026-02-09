@@ -1,4 +1,4 @@
-// main.cpp - C++ control loop with live JSON deadzone loading + tuning
+// main.cpp - C++ control loop with live JSON deadzone loading + tuning + CRSF output
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_gamecontroller.h>
@@ -9,6 +9,12 @@
 #include <iomanip>
 #include <string>
 #include <sstream>
+CRSFSender crsf_sender;
+CRSFSender crsf_sender;
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+#include <cstring>
 
 SDL_GameController* controller = nullptr;
 bool controller_connected = false;
@@ -48,9 +54,6 @@ int apply_deadzone(int raw, float dead) {
 
 void send_to_transmitter(int lx, int ly, int rx, int ry, int l2, int r2) {
     // === YOUR REAL TRANSMITTER CODE GOES HERE ===
-    // This runs every loop - keep it fast
-    // Example placeholder:
-    // std::cout << "TX: " << lx << ", " << ly << ", " << rx << ", " << ry << ", " << l2 << ", " << r2 << std::endl;
 }
 
 void load_deadzone_settings() {
@@ -78,6 +81,14 @@ void load_deadzone_settings() {
     }
 }
 
+// CRSF Sender (placeholder - expand when Nomad arrives)
+class CRSFSender {
+public:
+    bool begin() { return true; }  // Simulate for now
+    void send_tuned_data(int lx, int ly, int rx, int ry, int l2, int r2) {}
+    void close_port() {}
+};
+
 int main() {
     if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) {
         std::cerr << "SDL_Init failed: " << SDL_GetError() << std::endl;
@@ -85,16 +96,21 @@ int main() {
     }
 
     if (!open_controller()) {
+    crsf_sender.begin();
+    crsf_sender.begin();
         std::cout << "No controller found\n";
         SDL_Quit();
         return 1;
     }
 
+    CRSFSender crsf_sender;
+    crsf_sender.begin();
+
     bool running = true;
     auto last_gui_write = std::chrono::steady_clock::now();
     auto last_settings_check = std::chrono::steady_clock::now();
 
-    load_deadzone_settings();   // Initial load
+    load_deadzone_settings();
 
     while (running) {
         SDL_Event event;
@@ -102,22 +118,27 @@ int main() {
             if (event.type == SDL_QUIT) running = false;
         }
 
-        // Read raw controller values
-        int raw_lx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
-        int raw_ly = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
-        int raw_rx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX);
-        int raw_ry = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY);
-        int raw_l2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-        int raw_r2 = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+        // Detect disconnect
+        if (controller && !SDL_GameControllerGetAttached(controller)) {
+            std::cout << "Controller disconnected!" << std::endl;
+    crsf_sender.close_port();
+    crsf_sender.close_port();
+            close_controller();
+        }
 
-        // Load deadzone from JSON every 0.3 seconds
+        int raw_lx = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX) : 0;
+        int raw_ly = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY) : 0;
+        int raw_rx = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX) : 0;
+        int raw_ry = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY) : 0;
+        int raw_l2 = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) : 0;
+        int raw_r2 = controller ? SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) : 0;
+
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration<double>(now - last_settings_check).count() >= 0.3) {
             last_settings_check = now;
             load_deadzone_settings();
         }
 
-        // Apply deadzone tuning using loaded values
         int tuned_lx = apply_deadzone(raw_lx, LEFT_DEADZONE / 100.0f);
         int tuned_ly = apply_deadzone(raw_ly, LEFT_DEADZONE / 100.0f);
         int tuned_rx = apply_deadzone(raw_rx, RIGHT_DEADZONE / 100.0f);
@@ -125,15 +146,18 @@ int main() {
         int tuned_l2 = raw_l2;
         int tuned_r2 = raw_r2;
 
-        // Send tuned values to transmitter every loop (fast path)
         send_to_transmitter(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
+    crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
+    crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
 
-        // Write tuned values to GUI file every 20 ms
+        crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
+
         if (std::chrono::duration<double>(now - last_gui_write).count() >= 0.02) {
             last_gui_write = now;
             std::ofstream f("/tmp/flight_status.txt");
             if (f) {
                 f << "latency_ms:0.00 rate_hz:0 "
+                  << "connected:" << (controller_connected ? "1" : "0") << " "
                   << "lx:" << tuned_lx << " ly:" << tuned_ly
                   << " rx:" << tuned_rx << " ry:" << tuned_ry
                   << " l2:" << tuned_l2 << " r2:" << tuned_r2 << "\n";
@@ -144,20 +168,10 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
+    crsf_sender.close_port();
+    crsf_sender.close_port();
+    crsf_sender.close_port();
     close_controller();
     SDL_Quit();
     return 0;
 }
-
-// === CRSF SENDER INTEGRATION ===
-#include "crsf_sender.cpp"
-CRSFSender crsf_sender;
-
-// Add this after open_controller() succeeds (inside main(), after the return 1)
-crsf_sender.begin();
-
-// Replace your current send_to_transmitter call with this:
-crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
-
-// Add this before close_controller():
-crsf_sender.close_port();

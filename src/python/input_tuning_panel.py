@@ -7,8 +7,8 @@ import os
 from config import *
 from ui_helpers import draw_numeric_stepper
 
-SETTINGS_DIR = os.path.expanduser("~/.rc-flight-controller")
-SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+# NEW SAVE LOCATION: inside project folder
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json")
 
 prev_left_decrease_pressed = False
 left_decrease_last_release_time = 0.0
@@ -71,10 +71,10 @@ def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, panel_vi
 
 def save_settings():
     data = {"left_stick_deadzone": LEFT_STICK_DEADZONE, "right_stick_deadzone": RIGHT_STICK_DEADZONE}
-    os.makedirs(SETTINGS_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
     with open(SETTINGS_FILE, 'w') as f:
         json.dump(data, f, indent=4)
-    print("Settings saved to /home/pi4/.rc-flight-controller/settings.json")
+    print(f"Settings saved to {SETTINGS_FILE}")
 
 
 def load_settings():

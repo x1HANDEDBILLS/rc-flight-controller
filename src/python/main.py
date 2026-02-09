@@ -1,4 +1,4 @@
-# main.py - 3-row debug (RAW / TUNED / SENT) + latency tracking
+# main.py - 3-row debug (RAW / TUNED / SENT) + latency tracking + fixed icon
 
 import pygame
 import sys
@@ -50,9 +50,7 @@ last_flight_read = time.time()
 last_file_mtime = 0.0
 flight_latency_ms = flight_rate_hz = peak_latency = 0.0
 lx = ly = rx = ry = l2 = r2 = 0
-
-# Timing for latency tracking
-raw_time = tuned_time = sent_time = 0.0
+connected = 0  # NEW: controller status from file
 
 history = [0.0] * 110
 
@@ -100,6 +98,7 @@ while running:
                             elif part.startswith("r2:"): r2 = int(part.split(':')[1])
                             elif part.startswith("latency_ms:"): flight_latency_ms = float(part.split(':')[1])
                             elif part.startswith("rate_hz:"): flight_rate_hz = int(float(part.split(':')[1]))
+                            elif part.startswith("connected:"): connected = int(part.split(':')[1])
         except:
             pass
 
@@ -121,13 +120,19 @@ while running:
     tuned_lx, tuned_ly = get_tuned_left_stick(lx, ly)
     tuned_rx, tuned_ry = get_tuned_right_stick(rx, ry)
 
-    # Simulate "Sent" values (final values going to transmitter)
-    sent_lx = tuned_lx
-    sent_ly = tuned_ly
-    sent_rx = tuned_rx
-    sent_ry = tuned_ry
-    sent_l2 = l2
-    sent_r2 = r2
+    sent_lx = tuned_lx + 1024
+    sent_ly = tuned_ly + 1024
+    sent_rx = tuned_rx + 1024
+    sent_ry = tuned_ry + 1024
+    sent_l2 = l2 + 1024
+    sent_r2 = r2 + 1024
+
+    sent_lx = max(0, min(2047, sent_lx))
+    sent_ly = max(0, min(2047, sent_ly))
+    sent_rx = max(0, min(2047, sent_rx))
+    sent_ry = max(0, min(2047, sent_ry))
+    sent_l2 = max(0, min(2047, sent_l2))
+    sent_r2 = max(0, min(2047, sent_r2))
 
     debug_y = 85
     raw_color = (255, 200, 100)
@@ -171,7 +176,8 @@ while running:
     screen.blit(l2_text, (left_center[0] - l2_text.get_width() // 2, stick_y + stick_radius + 10))
     screen.blit(r2_text, (right_center[0] - r2_text.get_width() // 2, stick_y + stick_radius + 10))
 
-    draw_controller_icon(screen, ICON_X, SCREEN_HEIGHT - ICON_Y_OFFSET, flight_latency_ms >= 0)
+    # FIXED ICON: use connected status from file
+    draw_controller_icon(screen, ICON_X, SCREEN_HEIGHT - ICON_Y_OFFSET, connected == 1)
 
     gear_pressed = t_down and btn_rect.collidepoint(tx, ty)
     draw_gear_button(screen, btn_rect, gear_pressed)
