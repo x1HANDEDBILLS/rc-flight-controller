@@ -4,11 +4,8 @@
 #include <iostream>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
-#include <asm/termbits.h> // Linux specific for termios2
+#include <termios.h>
 #include <cstring>
-#include <vector>
-#include <algorithm>
 #include <stdint.h>
 
 class CRSFSender {
@@ -16,7 +13,7 @@ private:
     int fd = -1;
     const char* port = "/dev/ttyACM0"; 
 
-    // Self-contained CRC8 calculation for CRSF
+    // CRSF uses a specific polynomial (0xD5) for its 8-bit checksum
     uint8_t crc8(const uint8_t* data, uint8_t len) {
         uint8_t crc = 0;
         for (uint8_t i = 0; i < len; i++) {
@@ -31,35 +28,29 @@ private:
 
 public:
     bool begin() {
+        // Open port in Non-Blocking mode
         fd = open(port, O_RDWR | O_NOCTTY | O_NDELAY);
         if (fd < 0) return false;
 
-        // Use termios2 to set the non-standard 400,000 baud rate
-        struct termios2 tty;
-        if (ioctl(fd, TCGETS2, &tty) != 0) {
-            close(fd);
-            return false;
-        }
+        struct termios tty;
+        memset(&tty, 0, sizeof(tty));
+        if (tcgetattr(fd, &tty) != 0) return false;
 
-        // Set custom baud rate
-        tty.c_cflag &= ~CBAUD;
-        tty.c_cflag |= BOTHER;
-        tty.c_ispeed = 400000;
-        tty.c_ospeed = 400000;
-
-        // 8N1 Settings
-        tty.c_cflag &= ~CSIZE;
-        tty.c_cflag |= CS8;
+        // Set Baud Rate to 400,000 (Standard for CRSF)
+        // Note: On some systems B400000 is defined, on others we use the raw int
+        cfsetospeed(&tty, 400000);
+        cfsetispeed(&tty, 400000);
+        
+        // 8N1 (8 bits, no parity, 1 stop bit)
+        tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
         tty.c_cflag |= CLOCAL | CREAD;
         tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS);
         tty.c_iflag &= ~(IXON | IXOFF | IXANY);
         tty.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
         tty.c_oflag &= ~OPOST;
-
-        if (ioctl(fd, TCSETS2, &tty) != 0) {
-            close(fd);
-            return false;
-        }
+        
+        tcflush(fd, TCIFLUSH);
+        if (tcsetattr(fd, TCSANOW, &tty) != 0) return false;
         
         return true;
     }
@@ -76,21 +67,24 @@ public:
         if (fd < 0) return;
 
         uint8_t packet[26] = {0};
-        packet[0] = 0xC8;   // Destination: Receiver
-        packet[1] = 24;     // Length
+        packet[0] = 0xC8;   // Address: Receiver
+        packet[1] = 24;     // Remaining Length
         packet[2] = 0x16;   // Type: RC Channels
 
+        // --- THE MATH: Keeps your GUI big, but shrinks data for the wire ---
         uint16_t crsf_channels[16];
         for (int i = 0; i < 16; i++) {
-            // Map -32768/32767 to CRSF 172/1811
+            // Map PS4 (-32768 to 32767) to CRSF (172 to 1811)
             float norm = (logical_channels[i] + 32768) / 65535.0f;
             crsf_channels[i] = (uint16_t)(norm * 1639.0f + 172.0f);
             
+            // Protocol Safety Clamping
             if (crsf_channels[i] < 172) crsf_channels[i] = 172;
             if (crsf_channels[i] > 1811) crsf_channels[i] = 1811;
         }
 
-        // Bit-packing 16 channels (11-bits each) into 22 bytes
+        // --- BIT PACKING: Shoves 11-bit values into 8-bit bytes ---
+        
         packet[3]  = (uint8_t)(crsf_channels[0] & 0x07FF);
         packet[4]  = (uint8_t)((crsf_channels[0] >> 8) | (crsf_channels[1] << 3));
         packet[5]  = (uint8_t)((crsf_channels[1] >> 5) | (crsf_channels[2] << 6));

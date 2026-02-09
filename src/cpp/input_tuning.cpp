@@ -1,40 +1,31 @@
-// input_tuning.cpp - tuning functions
-
 #include "input_tuning.h"
-#include <algorithm>  // std::abs, std::max
+#include <cmath>
+#include <algorithm>
 
-InputTuning input_tuning;  // global instance
+void apply_tuning(int& raw_x, int& raw_y, float deadzone, float sens, float lowpass_alpha, int16_t& prev_x, int16_t& prev_y) {
+    // 1. Convert to float (-1.0 to 1.0)
+    float fx = (float)raw_x / 32767.0f;
+    float fy = (float)raw_y / 32767.0f;
 
-int16_t apply_deadzone(int16_t value, float deadzone) {
-    float normalized = static_cast<float>(value) / 32768.0f;
-    float abs_val = std::abs(normalized);
-    if (abs_val < deadzone) {
-        return 0;
-    }
-    float scaled = (abs_val - deadzone) / (1.0f - deadzone);
-    return static_cast<int16_t>(scaled * 32768.0f * (normalized < 0 ? -1.0f : 1.0f));
-}
+    // 2. Simple Axis-Independent Deadzone
+    auto process_axis = [&](float val) {
+        if (std::abs(val) < deadzone) return 0.0f;
+        // Rescale so it starts smoothly from 0 after the deadzone
+        val = (val > 0) ? (val - deadzone) / (1.0f - deadzone) : (val + deadzone) / (1.0f - deadzone);
+        return std::clamp(val * sens, -1.0f, 1.0f);
+    };
 
-int16_t apply_tuning(int16_t raw, float deadzone, float offset, float sens, bool invert, float lowpass_alpha, int16_t& prev) {
-    // Apply center offset first
-    float offset_applied = raw + static_cast<int16_t>(offset * 32768.0f);
+    fx = process_axis(fx);
+    fy = process_axis(fy);
 
-    // Deadzone
-    int16_t deadzoned = apply_deadzone(offset_applied, deadzone);
+    // 3. Lowpass Smoothing
+    float filtered_x = (fx * (1.0f - lowpass_alpha)) + ((float)prev_x / 32767.0f * lowpass_alpha);
+    float filtered_y = (fy * (1.0f - lowpass_alpha)) + ((float)prev_y / 32767.0f * lowpass_alpha);
 
-    // Sensitivity
-    float tuned = deadzoned * sens;
-
-    // Clamp
-    tuned = std::max(-32768.0f, std::min(32767.0f, tuned));
-
-    // Low-pass filter
-    if (lowpass_alpha > 0.0f && lowpass_alpha <= 1.0f) {
-        tuned = (lowpass_alpha * tuned) + ((1.0f - lowpass_alpha) * prev);
-    }
-
-    prev = static_cast<int16_t>(tuned);
-
-    // Invert
-    return invert ? -static_cast<int16_t>(tuned) : static_cast<int16_t>(tuned);
+    // 4. Update raw values and memory
+    raw_x = (int)(filtered_x * 32767.0f);
+    raw_y = (int)(filtered_y * 32767.0f);
+    
+    prev_x = (int16_t)raw_x;
+    prev_y = (int16_t)raw_y;
 }
