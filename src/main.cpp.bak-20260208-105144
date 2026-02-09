@@ -1,4 +1,4 @@
-// main.cpp - C++ control loop with live JSON deadzone loading + tuning
+// main.cpp - fast C++ control loop with live JSON deadzone loading + tuning
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_gamecontroller.h>
@@ -10,13 +10,14 @@
 #include <string>
 #include <sstream>
 
-SDL_GameController* controller = nullptr;
-bool controller_connected = false;
-
+// Globals for deadzone (loaded from JSON and applied)
 int LEFT_DEADZONE = 0;
 int RIGHT_DEADZONE = 0;
 
+// Your real functions (replace placeholders with your original code)
 bool open_controller() {
+    // Your original open_controller code here
+    // Example placeholder:
     for (int i = 0; i < SDL_NumJoysticks(); ++i) {
         if (SDL_IsGameController(i)) {
             controller = SDL_GameControllerOpen(i);
@@ -27,7 +28,6 @@ bool open_controller() {
             }
         }
     }
-    std::cout << "No controller found" << std::endl;
     return false;
 }
 
@@ -47,12 +47,12 @@ int apply_deadzone(int raw, float dead) {
 }
 
 void send_to_transmitter(int lx, int ly, int rx, int ry, int l2, int r2) {
-    // === YOUR REAL TRANSMITTER CODE GOES HERE ===
-    // This runs every loop - keep it fast
+    // Your real transmitter send code here - runs every loop
     // Example placeholder:
     // std::cout << "TX: " << lx << ", " << ly << ", " << rx << ", " << ry << ", " << l2 << ", " << r2 << std::endl;
 }
 
+// Simple JSON loader (no external lib needed)
 void load_deadzone_settings() {
     std::ifstream f("/home/pi4/.rc-flight-controller/settings.json");
     if (!f.is_open()) return;
@@ -94,7 +94,8 @@ int main() {
     auto last_gui_write = std::chrono::steady_clock::now();
     auto last_settings_check = std::chrono::steady_clock::now();
 
-    load_deadzone_settings();   // Initial load
+    // Initial load
+    load_deadzone_settings();
 
     while (running) {
         SDL_Event event;
@@ -117,7 +118,7 @@ int main() {
             load_deadzone_settings();
         }
 
-        // Apply deadzone tuning using loaded values
+        // Apply deadzone to raw input
         int tuned_lx = apply_deadzone(raw_lx, LEFT_DEADZONE / 100.0f);
         int tuned_ly = apply_deadzone(raw_ly, LEFT_DEADZONE / 100.0f);
         int tuned_rx = apply_deadzone(raw_rx, RIGHT_DEADZONE / 100.0f);
@@ -125,10 +126,10 @@ int main() {
         int tuned_l2 = raw_l2;
         int tuned_r2 = raw_r2;
 
-        // Send tuned values to transmitter every loop (fast path)
+        // Send tuned values to transmitter every loop
         send_to_transmitter(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
 
-        // Write tuned values to GUI file every 20 ms
+        // Write tuned values to GUI monitoring file every 20 ms
         if (std::chrono::duration<double>(now - last_gui_write).count() >= 0.02) {
             last_gui_write = now;
             std::ofstream f("/tmp/flight_status.txt");
@@ -148,16 +149,3 @@ int main() {
     SDL_Quit();
     return 0;
 }
-
-// === CRSF SENDER INTEGRATION ===
-#include "crsf_sender.cpp"
-CRSFSender crsf_sender;
-
-// Add this after open_controller() succeeds (inside main(), after the return 1)
-crsf_sender.begin();
-
-// Replace your current send_to_transmitter call with this:
-crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
-
-// Add this before close_controller():
-crsf_sender.close_port();

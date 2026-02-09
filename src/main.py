@@ -1,4 +1,4 @@
-# main.py - working version with centered joystick visualization
+# main.py - 3-row debug (RAW / TUNED / SENT) + latency tracking
 
 import pygame
 import sys
@@ -33,7 +33,8 @@ except pygame.error as e:
 pygame.mouse.set_visible(False)
 
 font = pygame.font.SysFont("monospace", 18, bold=True)
-small_font = pygame.font.SysFont("monospace", 20, bold=True)
+small_font = pygame.font.SysFont("monospace", 16)
+debug_font = pygame.font.SysFont("monospace", 17, bold=True)
 
 bg = create_gradient_bg(SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_BG_DARK, COLOR_BG_LIGHT)
 
@@ -50,6 +51,9 @@ last_file_mtime = 0.0
 flight_latency_ms = flight_rate_hz = peak_latency = 0.0
 lx = ly = rx = ry = l2 = r2 = 0
 
+# Timing for latency tracking
+raw_time = tuned_time = sent_time = 0.0
+
 history = [0.0] * 110
 
 clock = pygame.time.Clock()
@@ -64,14 +68,6 @@ back_last_release_time = 0.0
 prev_input_pressed = False
 input_last_release_time = 0.0
 
-# Visualization constants - centered pair with 240 px spacing
-stick_radius = 60
-stick_spacing = 240
-center_x = SCREEN_WIDTH // 2
-left_stick_x = center_x - (stick_spacing // 2)
-right_stick_x = center_x + (stick_spacing // 2)
-stick_y = SCREEN_HEIGHT - 180
-
 while running:
     latest = [0.1, False, 0, 0]
     while parent_conn.poll():
@@ -85,7 +81,7 @@ while running:
         peak_latency = max(peak_latency, t_lat)
 
     now = time.time()
-    if now - last_flight_read >= 0.05:
+    if now - last_flight_read >= 0.02:
         last_flight_read = now
         try:
             mtime = os.path.getmtime('/tmp/flight_status.txt')
@@ -96,22 +92,14 @@ while running:
                     if line:
                         parts = line.split()
                         for part in parts:
-                            if part.startswith("latency_ms:"):
-                                flight_latency_ms = float(part.split(':')[1])
-                            elif part.startswith("rate_hz:"):
-                                flight_rate_hz = int(float(part.split(':')[1]))
-                            elif part.startswith("lx:"):
-                                lx = int(part.split(':')[1])
-                            elif part.startswith("ly:"):
-                                ly = int(part.split(':')[1])
-                            elif part.startswith("rx:"):
-                                rx = int(part.split(':')[1])
-                            elif part.startswith("ry:"):
-                                ry = int(part.split(':')[1])
-                            elif part.startswith("l2:"):
-                                l2 = int(part.split(':')[1])
-                            elif part.startswith("r2:"):
-                                r2 = int(part.split(':')[1])
+                            if part.startswith("lx:"): lx = int(part.split(':')[1])
+                            elif part.startswith("ly:"): ly = int(part.split(':')[1])
+                            elif part.startswith("rx:"): rx = int(part.split(':')[1])
+                            elif part.startswith("ry:"): ry = int(part.split(':')[1])
+                            elif part.startswith("l2:"): l2 = int(part.split(':')[1])
+                            elif part.startswith("r2:"): r2 = int(part.split(':')[1])
+                            elif part.startswith("latency_ms:"): flight_latency_ms = float(part.split(':')[1])
+                            elif part.startswith("rate_hz:"): flight_rate_hz = int(float(part.split(':')[1]))
         except:
             pass
 
@@ -129,25 +117,51 @@ while running:
     flight_text = f"Flight: {flight_latency_ms:5.2f} ms   Rate: {flight_rate_hz} Hz"
     screen.blit(font.render(flight_text, True, COLOR_FLIGHT), (16, 50))
 
-    # Tuned values for visualization (shows deadzone effect)
+    # === 3-ROW DEBUG DISPLAY - Top Middle ===
     tuned_lx, tuned_ly = get_tuned_left_stick(lx, ly)
     tuned_rx, tuned_ry = get_tuned_right_stick(rx, ry)
 
-    # Left stick (centered pair)
+    # Simulate "Sent" values (final values going to transmitter)
+    sent_lx = tuned_lx
+    sent_ly = tuned_ly
+    sent_rx = tuned_rx
+    sent_ry = tuned_ry
+    sent_l2 = l2
+    sent_r2 = r2
+
+    debug_y = 85
+    raw_color = (255, 200, 100)
+    tuned_color = (100, 255, 100)
+    sent_color = (100, 180, 255)
+
+    raw_text = debug_font.render(f"RAW   LX:{lx:6d} LY:{ly:6d}  RX:{rx:6d} RY:{ry:6d}  L2:{l2:5d} R2:{r2:5d}", True, raw_color)
+    tuned_text = debug_font.render(f"TUNED LX:{tuned_lx:6d} LY:{tuned_ly:6d}  RX:{tuned_rx:6d} RY:{tuned_ry:6d}  L2:{l2:5d} R2:{r2:5d}", True, tuned_color)
+    sent_text = debug_font.render(f"SENT  LX:{sent_lx:6d} LY:{sent_ly:6d}  RX:{sent_rx:6d} RY:{sent_ry:6d}  L2:{sent_l2:5d} R2:{sent_r2:5d}", True, sent_color)
+
+    screen.blit(raw_text, (SCREEN_WIDTH//2 - raw_text.get_width()//2, debug_y))
+    screen.blit(tuned_text, (SCREEN_WIDTH//2 - tuned_text.get_width()//2, debug_y + 26))
+    screen.blit(sent_text, (SCREEN_WIDTH//2 - sent_text.get_width()//2, debug_y + 52))
+
+    # Live controller visualization
+    stick_radius = 60
+    stick_spacing = 240
+    center_x = SCREEN_WIDTH // 2
+    left_stick_x = center_x - (stick_spacing // 2)
+    right_stick_x = center_x + (stick_spacing // 2)
+    stick_y = SCREEN_HEIGHT - 180
+
     left_center = (left_stick_x, stick_y)
     pygame.draw.circle(screen, (80, 80, 80), left_center, stick_radius, 4)
     left_x = left_center[0] + (tuned_lx / 32768.0) * stick_radius
     left_y = left_center[1] + (tuned_ly / 32768.0) * stick_radius
     pygame.draw.circle(screen, (0, 255, 80), (int(left_x), int(left_y)), 12)
 
-    # Right stick
     right_center = (right_stick_x, stick_y)
     pygame.draw.circle(screen, (80, 80, 80), right_center, stick_radius, 4)
     right_x = right_center[0] + (tuned_rx / 32768.0) * stick_radius
     right_y = right_center[1] + (tuned_ry / 32768.0) * stick_radius
     pygame.draw.circle(screen, (0, 255, 80), (int(right_x), int(right_y)), 12)
 
-    # L2 and R2 percentages under sticks
     l2_pct = int((l2 / 32768.0) * 100)
     r2_pct = int((r2 / 32768.0) * 100)
 

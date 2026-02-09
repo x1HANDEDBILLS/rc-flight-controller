@@ -47,10 +47,7 @@ int apply_deadzone(int raw, float dead) {
 }
 
 void send_to_transmitter(int lx, int ly, int rx, int ry, int l2, int r2) {
-    // === YOUR REAL TRANSMITTER CODE GOES HERE ===
-    // This runs every loop - keep it fast
-    // Example placeholder:
-    // std::cout << "TX: " << lx << ", " << ly << ", " << rx << ", " << ry << ", " << l2 << ", " << r2 << std::endl;
+    // Your real transmitter code here - runs every loop
 }
 
 void load_deadzone_settings() {
@@ -148,16 +145,3 @@ int main() {
     SDL_Quit();
     return 0;
 }
-
-// === CRSF SENDER INTEGRATION ===
-#include "crsf_sender.cpp"
-CRSFSender crsf_sender;
-
-// Add this after open_controller() succeeds (inside main(), after the return 1)
-crsf_sender.begin();
-
-// Replace your current send_to_transmitter call with this:
-crsf_sender.send_tuned_data(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
-
-// Add this before close_controller():
-crsf_sender.close_port();

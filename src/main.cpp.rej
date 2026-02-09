@@ -1,0 +1,52 @@
+--- main.cpp
++++ main.cpp
+@@ -17,6 +19,7 @@
+ bool open_controller() { /* your original open_controller code */ return false; }
+ void close_controller() { /* your original close_controller code */ }
+ int apply_deadzone(int raw, float dead) {
++    // your deadzone function
+ }
+ void send_to_transmitter(int lx, int ly, int rx, int ry, int l2, int r2) {
+     // Your real transmitter code here - runs every loop
+@@ -37,6 +40,7 @@
+ int main() {
+     if (SDL_Init(SDL_INIT_GAMECONTROLLER) < 0) {
+         std::cerr << "SDL_Init failed\n";
++        return 1;
+     }
+ 
+     if (!open_controller()) {
+@@ -44,6 +48,7 @@
+         SDL_Quit();
+         return 1;
+     }
+ 
++    crsf_sender.begin();   // Open Nomad connection
+ 
+     bool running = true;
+--- /dev/null
++++ /dev/null
+@@ -67,6 +73,7 @@
+         auto now = std::chrono::steady_clock::now();
+         if (std::chrono::duration<double>(now - last_settings_check).count() >= 0.3) {
+             last_settings_check = now;
++            load_deadzone_settings();
+         }
+ 
+         // Apply deadzone tuning using loaded values
+@@ -77,6 +84,7 @@
+         int tuned_l2 = raw_l2;
+         int tuned_r2 = raw_r2;
+ 
++        // Send tuned values to transmitter (fast path)
+         send_to_transmitter(tuned_lx, tuned_ly, tuned_rx, tuned_ry, tuned_l2, tuned_r2);
+ 
+         // Write tuned values to GUI file every 20 ms
+@@ -87,6 +95,7 @@
+                 f << "latency_ms:0.00 rate_hz:0 "
+                   << "lx:" << tuned_lx << " ly:" << tuned_ly
+                   << " rx:" << tuned_rx << " ry:" << tuned_ry
++                  << " l2:" << tuned_l2 << " r2:" << tuned_r2 << "\n";
+                 f.close();
+             }
+         }
