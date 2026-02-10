@@ -7,10 +7,9 @@ import numpy as np
 from multiprocessing import Process, Pipe
 from logic_process import logic_process
 from render_core import create_gradient_bg
-from ui_components import draw_gear_button, draw_settings_panel, draw_controller_icon
-# Import both tuning state and the draw function
-from input_tuning_panel import load_settings, draw_input_tuning_panel, TUNING_STATE
-from mapper_panel import load_mapper_settings, draw_mapper_panel, get_tuned_val, CHANNEL_MAPS, SPLIT_CONFIG
+from ui_components import draw_gear_button, draw_settings_panel, draw_controller_icon, PANEL_MAP
+from input_tuning_panel import load_settings, TUNING_STATE
+from mapper_panel import load_mapper_settings, get_tuned_val, CHANNEL_MAPS, SPLIT_CONFIG
 from config import *
 
 # --- UDP SETUP FOR C++ ENGINE ---
@@ -19,20 +18,18 @@ ENGINE_ADDR = ("127.0.0.1", 5005)
 
 def sync_to_engine():
     """
-    Sends the current mapping and split-mixer rules to the C++ engine.
-    This bridges the gap between 'TUNED' (Python) and 'SENT' (C++).
+    Sends the current mapping and tuning rules to the C++ engine.
+    This bridges the gap between Python (UI) and C++ (Flight Logic).
     """
     try:
         # 1. SYNC CHANNEL MAPS
-        # Format: MAP|ch0,ch1...ch15|target_ch,pos_id,neg_id,pos_c,pos_r,neg_c,neg_r
         m_str = ",".join(map(str, CHANNEL_MAPS))
         s = SPLIT_CONFIG
         split_data = f"{s['target_ch']},{s['pos_id']},{s['neg_id']},{int(s['pos_center'])},{int(s['pos_reverse'])},{int(s['neg_center'])},{int(s['neg_reverse'])}"
         packet = f"SET_MAP|{m_str}|{split_data}"
         udp_sock.sendto(packet.encode(), ENGINE_ADDR)
 
-        # 2. SYNC TUNING PARAMS (Smoothing, Rates, Cinematic)
-        # This ensures C++ starts with the same values saved in your JSON
+# 2. SYNC TUNING PARAMS (Smoothing, Rates, Cinematic, Deadzones)
         t = TUNING_STATE
         params = [
             f"SMOOTH:{t['smoothing']}",
@@ -40,8 +37,8 @@ def sync_to_engine():
             f"EXPO:{t['expo']}",
             f"CINE_ON:{int(t['cine_on'])}",
             f"CINE_VAL:{t['cine_intensity']}",
-            f"L_DZ:{t['left_deadzone']}",
-            f"R_DZ:{t['right_deadzone']}"
+            f"L_DZ:{round(t['left_deadzone'] / 10.0, 2)}",  # <--- Change this line
+            f"R_DZ:{round(t['right_deadzone'] / 10.0, 2)}"   # <--- Change this line
         ]
         for p_msg in params:
             udp_sock.sendto(p_msg.encode(), ENGINE_ADDR)
@@ -49,18 +46,22 @@ def sync_to_engine():
     except Exception as e:
         print(f"UDP Sync Error: {e}")
 
-# Initialize configs
+# Initialize configs and sync once on startup
 load_settings()
 load_mapper_settings()
-sync_to_engine() # Sync everything on startup
+sync_to_engine()
 
 # Setup communication for touch/logic
 parent_conn, child_conn = Pipe(False)
 p = Process(target=logic_process, args=(child_conn,), daemon=True)
 p.start()
 
-pygame.init()
-# Use DOUBLEBUF and HWSURFACE for smooth rendering of live numbers
+# --- REPLACED pygame.init() ---
+pygame.display.init()
+pygame.font.init()
+# ------------------------------
+
+# Use FULLSCREEN, DOUBLEBUF and HWSURFACE for Raspberry Pi performance
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN | pygame.DOUBLEBUF | pygame.HWSURFACE)
 pygame.mouse.set_visible(False)
 
@@ -76,27 +77,25 @@ active_panel_index = -1
 last_nav_time = 0
 peak_latency = 0.0
 
-# Persistent State
+# Persistent Flight Data
 connected = 0
 flight_latency_ms = flight_rate_hz = 0.0
 raw_signals = [0] * 23 
-
-# Protocol State (The "Sent" values from C++)
-ch_sent = ["0"] * 16
+tuned_signals = [0] * 23  # Cleaned signals coming back from C++
+ch_sent = ["0"] * 16      # Radio protocol values
 
 clock = pygame.time.Clock()
 running = True
 
 while running:
-    # Handle Touch Pipe
+    # 1. Handle Touch Pipe
     latest = [0.1, False, 0, 0]
     while parent_conn.poll(): 
         latest = parent_conn.recv()
     t_lat, t_down, tx, ty = latest
     peak_latency = max(peak_latency, t_lat)
 
-    # --- LIVE REAL-TIME PARSER ---
-    # Captures current status from the C++ flight controller
+    # 2. Parse Telemetry from C++ Engine (/tmp/flight_status.txt)
     if os.path.exists('/tmp/flight_status.txt'):
         try:
             with open('/tmp/flight_status.txt', 'r') as f:
@@ -105,74 +104,62 @@ while running:
                     parts = content.split()
                     data = {p_item.split(':', 1)[0]: p_item.split(':', 1)[1] for p_item in parts if ':' in p_item}
                     
-                    # 1. DYNAMIC RAW INPUT PARSER
                     for key, val in data.items():
                         if key.startswith('rawid'):
-                            try:
-                                idx = int(key.replace('rawid', ''))
-                                if idx < len(raw_signals):
-                                    raw_signals[idx] = int(float(val))
-                            except: pass
+                            idx = int(key.replace('rawid', ''))
+                            if idx < 23: raw_signals[idx] = int(float(val))
+                        
+                        elif key.startswith('tunedid'):
+                            idx = int(key.replace('tunedid', ''))
+                            if idx < 23: tuned_signals[idx] = int(float(val))
 
-                    # 2. Protocol Values (CH1-CH16)
-                    for i in range(16):
-                        key = f'ch{i+1}'
-                        if key in data:
-                            ch_sent[i] = data[key]
+                        elif key.startswith('ch'):
+                            idx = int(key.replace('ch', '')) - 1
+                            if idx < 16: ch_sent[idx] = val
                     
                     if 'connected' in data: connected = int(float(data['connected']))
                     if 'latency_ms' in data: flight_latency_ms = float(data['latency_ms'])
                     if 'rate_hz' in data: flight_rate_hz = float(data['rate_hz'])
-        except Exception: pass
+        except Exception: 
+            pass
 
-    # --- LIVE TUNING CALCULATION (FOR UI FEEDBACK) ---
-    tuned_channels = [0] * 16
-    for ch_idx in range(16):
-        if ch_idx == SPLIT_CONFIG["target_ch"]:
-            s = SPLIT_CONFIG
-            p_raw = raw_signals[s["pos_id"]] if s["pos_id"] < 23 else -32768
-            n_raw = raw_signals[s["neg_id"]] if s["neg_id"] < 23 else -32768
-            
-            p_tuned = get_tuned_val(p_raw, s["pos_center"], s["pos_reverse"])
-            n_tuned = get_tuned_val(n_raw, s["neg_center"], s["neg_reverse"])
-            
-            tuned_channels[ch_idx] = max(-32768, min(32767, p_tuned + n_tuned))
-        else:
-            src_id = CHANNEL_MAPS[ch_idx]
-            tuned_channels[ch_idx] = raw_signals[src_id] if src_id < 23 else -32768
+    # 3. Stick Preview Logic
+    mapped_preview = [0] * 16
+    for i in range(16):
+        src_id = CHANNEL_MAPS[i]
+        mapped_preview[i] = tuned_signals[src_id] if src_id < 23 else -32768
 
-    # Render Background
+    # 4. Rendering
     screen.blit(bg, (0, 0))
+    
+    # Header Status
     t_color = (0, 255, 100) if t_lat < 10 else (255, 50, 50)
     screen.blit(font.render(f"Touch: {t_lat:5.2f}ms  Peak: {peak_latency:4.1f}ms", True, t_color), (16, 14))
     screen.blit(font.render(f"Flight: {flight_latency_ms:5.2f}ms  Rate: {int(flight_rate_hz)}Hz", True, (100, 180, 255)), (16, 45))
 
-    # --- RENDER DEBUG TEXT ---
+    # Debug Data Table
     debug_y = 85
     r_txt = debug_font.render(f"RAW ID  00:{raw_signals[0]:6d} 01:{raw_signals[1]:6d} 02:{raw_signals[2]:6d} 03:{raw_signals[3]:6d}", True, (255, 200, 100))
-    t_txt = debug_font.render(f"TUNED  CH1:{tuned_channels[0]:6d} CH2:{tuned_channels[1]:6d} CH3:{tuned_channels[2]:6d} CH4:{tuned_channels[3]:6d}", True, (100, 255, 100))
-    s_txt = debug_font.render(f"SENT   CH1:{str(ch_sent[0]):>6} CH2:{str(ch_sent[1]):>6} CH3:{str(ch_sent[2]):>6} CH4:{str(ch_sent[3]):>6}", True, (100, 180, 255))
-    
+    t_txt = debug_font.render(f"TUNED   ID0:{tuned_signals[0]:6d} ID1:{tuned_signals[1]:6d} ID2:{tuned_signals[2]:6d} ID3:{tuned_signals[3]:6d}", True, (100, 255, 100))
+    s_txt = debug_font.render(f"SENT    CH1:{str(ch_sent[0]):>6} CH2:{str(ch_sent[1]):>6} CH3:{str(ch_sent[2]):>6} CH4:{str(ch_sent[3]):>6}", True, (100, 180, 255))
     screen.blit(r_txt, (SCREEN_WIDTH//2 - r_txt.get_width()//2, debug_y))
     screen.blit(t_txt, (SCREEN_WIDTH//2 - t_txt.get_width()//2, debug_y + 25))
     screen.blit(s_txt, (SCREEN_WIDTH//2 - s_txt.get_width()//2, debug_y + 50))
 
-    # --- DYNAMIC STICK VISUALIZER ---
-    stick_centers = [(SCREEN_WIDTH//2 - 120, 0, 1, "CH 1/2"), (SCREEN_WIDTH//2 + 120, 2, 3, "CH 3/4")]
-    for sx, x_idx, y_idx, label in stick_centers:
-        pygame.draw.circle(screen, (60, 60, 65), (sx, 350), 60, 3)
-        pygame.draw.line(screen, (45, 45, 50), (sx-60, 350), (sx+60, 350), 1)
-        pygame.draw.line(screen, (45, 45, 50), (sx, 350-60), (sx, 350+60), 1)
-        
-        jx = sx + (tuned_channels[x_idx] / 32768.0) * 60
-        jy = 350 + (tuned_channels[y_idx] / 32768.0) * 60
-        
+    # Stick Visualizers
+    stick_centers = [(SCREEN_WIDTH//2 - 120, 350, 0, 1, "CH 1/2"), (SCREEN_WIDTH//2 + 120, 350, 2, 3, "CH 3/4")]
+    for sx, sy, x_idx, y_idx, label in stick_centers:
+        pygame.draw.circle(screen, (60, 60, 65), (sx, sy), 60, 3)
+        jx = sx + (mapped_preview[x_idx] / 32768.0) * 60
+        jy = sy + (mapped_preview[y_idx] / 32768.0) * 60
         pygame.draw.circle(screen, (0, 255, 100), (int(jx), int(jy)), 10)
         lbl = small_font.render(label, True, (120, 120, 130))
-        screen.blit(lbl, (sx - lbl.get_width()//2, 420))
+        screen.blit(lbl, (sx - lbl.get_width()//2, sy + 70))
 
+    # Bottom Icons
     draw_controller_icon(screen, 20, SCREEN_HEIGHT - 75, connected == 1)
     
+    # Gear Button
     gear_rect = pygame.Rect(BTN_RECT)
     gear_pressed = t_down and gear_rect.collidepoint(tx, ty)
     draw_gear_button(screen, gear_rect, gear_pressed)
@@ -182,39 +169,37 @@ while running:
         settings_visible = not settings_visible
         last_nav_time = now
 
-    # --- SETTINGS SIDEBAR & PANEL LOGIC ---
+    # 5. Settings Sidebar & Sub-Panel Logic
     if settings_visible:
+        # Animate Sidebar sliding in
         settings_rect.x = max(settings_rect.x - 30, SCREEN_WIDTH - 190)
         
-        # Draw the sidebar and detect if a tab was clicked
-        clicked = draw_settings_panel(screen, settings_rect, t_down, tx, ty, active_panel_index, raw_signals)
+        # Draw settings and get feedback
+        # Returns: (which tab was clicked, if a slider/value inside a panel changed)
+        new_clicked, settings_changed = draw_settings_panel(
+            screen, settings_rect, t_down, tx, ty, active_panel_index, raw_signals
+        )
         
-        panel_rect = pygame.Rect(0, 0, SCREEN_WIDTH - 190, SCREEN_HEIGHT)
+        # If a slider was moved, sync immediately to C++
+        if settings_changed:
+            sync_to_engine()
 
-        if active_panel_index == 0:  # Input Tuning (Expo/Smooth/Cine)
-            # This function internaly sends UDP packets via its stream_to_cpp calls
-            draw_input_tuning_panel(screen, panel_rect, t_down, tx, ty, raw_signals)
-
-        elif active_panel_index == 2:  # Input Mapper Panel
-            was_changed = draw_mapper_panel(screen, panel_rect, t_down, tx, ty, raw_signals)
-            if was_changed:
-                sync_to_engine() 
-
-        # Handle Sidebar Navigation
-        if clicked != -1 and (now - last_nav_time) > 0.3:
-            if clicked == 1: # Close sidebar button index
+        # Handle Tab Switching and the Back Button
+        if new_clicked != -1 and (now - last_nav_time) > 0.3:
+            if PANEL_MAP[new_clicked][0] == "Back":
                 settings_visible = False
                 active_panel_index = -1
-            else: 
-                active_panel_index = clicked
+            else:
+                active_panel_index = new_clicked
             last_nav_time = now
     else:
-        # Slide sidebar out
+        # Animate Sidebar sliding out
         settings_rect.x = min(settings_rect.x + 30, SCREEN_WIDTH)
         active_panel_index = -1
 
     pygame.display.flip()
     
+    # 6. Event Handling
     for event in pygame.event.get():
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: 
             running = False

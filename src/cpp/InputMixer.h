@@ -2,23 +2,29 @@
 #define INPUT_MIXER_H
 
 #include "InputMapper.h"
+#include <algorithm>
 
 class InputMixer {
 public:
-    // This is the clean 16-channel array the Sender will eventually use
+    // This holds the 16-channel output that the CRSFSender will read.
+    // Range: -32768 to 32767
     int final_channels[16];
 
     InputMixer() {
-        for(int i = 0; i < 16; i++) final_channels[i] = 0;
+        // Initialize all channels to 0 (neutral) on startup
+        for (int i = 0; i < 16; i++) {
+            final_channels[i] = 0;
+        }
     }
 
     /**
-     * @brief Pulls data from the Mapper and prepares the final flight array.
+     * @brief Simple passthrough from the Mapper to the final output array.
+     * This keeps the pipeline clean and provides a future entry point for 
+     * complex channel mixing math.
      */
     void process(const LogicalSignals &mapped_signals) {
         for (int i = 0; i < 16; i++) {
-            // Currently 1:1 Pass-through. 
-            // This is where you'd add "Fancy" math later.
+            // Direct 1:1 passthrough
             final_channels[i] = mapped_signals.channels[i];
         }
     }

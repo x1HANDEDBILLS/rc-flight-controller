@@ -2,7 +2,7 @@
 from evdev import InputDevice, ecodes, list_devices
 from select import select
 import time
-from config import SCREEN_WIDTH, SCREEN_HEIGHT # Added this for proper scaling
+from config import SCREEN_WIDTH, SCREEN_HEIGHT
 
 def logic_process(conn):
     touch_dev = None
@@ -20,6 +20,7 @@ def logic_process(conn):
         touch_dev = None
         device_path = None
         candidates = []
+        
         for path in list_devices():
             try:
                 dev = InputDevice(path)
@@ -37,6 +38,7 @@ def logic_process(conn):
                         return True
             except:
                 pass
+        
         if touch_dev is None and candidates:
             candidates.sort(key=lambda x: (not x[2], not x[3]), reverse=True)
             touch_dev = InputDevice(candidates[0][0])
@@ -48,7 +50,6 @@ def logic_process(conn):
     if not try_open_touch():
         print("No touchscreen found initially.")
         conn.send([999.0, False, 0, 0])
-        # We don't return here so it can keep re-scanning in the loop
     else:
         try:
             touch_dev.grab()
@@ -60,23 +61,33 @@ def logic_process(conn):
     tx = ty = 0
     last_scan_attempt = time.time()
 
-    # Get max values of the digitizer for accurate scaling
-    abs_info_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X) if touch_dev else None
-    max_x = abs_info_x.max if abs_info_x else 4095
-    abs_info_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y) if touch_dev else None
-    max_y = abs_info_y.max if abs_info_y else 4095
+    # Get initial digitizer limits
+    if touch_dev:
+        abs_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X)
+        abs_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y)
+        max_x = abs_x.max if abs_x and abs_x.max > 0 else 4095
+        max_y = abs_y.max if abs_y and abs_y.max > 0 else 4095
+    else:
+        max_x = max_y = 4095
+
+    
 
     while True:
         if touch_dev is None:
+            # FIX: Ensure main process knows touch is UP when device is lost
+            is_down = False 
             conn.send([-1.0, False, 0, 0])
+            
             if time.time() - last_scan_attempt >= 2.0:
                 last_scan_attempt = time.time()
                 if try_open_touch():
                     try:
                         touch_dev.grab()
                         # Refresh digitizer max values on reconnect
-                        max_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X).max
-                        max_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y).max
+                        info_x = touch_dev.absinfo(ecodes.ABS_MT_POSITION_X)
+                        info_y = touch_dev.absinfo(ecodes.ABS_MT_POSITION_Y)
+                        max_x = info_x.max if info_x and info_x.max > 0 else 4095
+                        max_y = info_y.max if info_y and info_y.max > 0 else 4095
                     except:
                         pass
             time.sleep(0.5)
@@ -84,32 +95,38 @@ def logic_process(conn):
 
         try:
             t_start = time.perf_counter_ns()
+            # 12ms timeout for select matches roughly 80Hz polling
             r, _, _ = select([touch_dev.fd], [], [], 0.012)
 
             if r:
                 for event in touch_dev.read():
                     if event.type == ecodes.EV_ABS:
-                        # Scaled to actual SCREEN size defined in config.py
                         if event.code == ecodes.ABS_MT_POSITION_X:
                             tx = int(event.value * SCREEN_WIDTH / max_x)
                         elif event.code == ecodes.ABS_MT_POSITION_Y:
                             ty = int(event.value * SCREEN_HEIGHT / max_y)
+                    
                     elif event.type == ecodes.EV_KEY:
                         if event.code == ecodes.BTN_TOUCH:
                             is_down = bool(event.value)
+                    
                     elif event.type == ecodes.EV_SYN and event.code == ecodes.SYN_REPORT:
                         latency_ms = (time.perf_counter_ns() - t_start) / 1_000_000
                         conn.send([latency_ms, is_down, tx, ty])
             else:
+                # Still send the current state even if no new movement to keep main loop alive
                 latency_ms = (time.perf_counter_ns() - t_start) / 1_000_000
                 conn.send([latency_ms, is_down, tx, ty])
 
         except OSError as e:
+            # Error 19 is 'No such device' (unplugged)
             if e.errno == 19:
                 print("Touch device lost - re-scanning...")
                 touch_dev = None
+                is_down = False # Force release
                 conn.send([-1.0, False, 0, 0])
             else:
                 raise
 
+        # Micro-sleep to prevent 100% CPU usage while maintaining low latency
         time.sleep(0.0005)
