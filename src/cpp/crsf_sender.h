@@ -12,14 +12,15 @@
 #include <atomic>
 #include <vector>
 #include <algorithm>
-#include <mutex>  // New for console_mutex
+#include <mutex> 
 
-#include "crsf_parser.h"  // Include the separate parser header
+#include "crsf_parser.h"
 
 #define CRSF_CHANNELS_COUNT 16
 #define CRSF_CH_BITS 11
 
-extern std::mutex console_mutex;  // Declare external (define in main.cpp)
+// Reference to the mutex physically defined in main.cpp
+extern std::mutex console_mutex;
 
 class CRSFSender {
 private:
@@ -57,60 +58,32 @@ private:
     void receive_loop() {
         TelemetryData telemetry;
         std::vector<uint8_t> buffer;
-        bool in_frame = false;
-        uint8_t expected_len = 0;
-
-        uint8_t byte_buffer[1]; // Read one byte at a time for proper framing
+        uint8_t byte;
 
         while (running) {
-            int n = read(fd, byte_buffer, 1);
-            if (n > 0) {
-                uint8_t byte = byte_buffer[0];
-
-                if (!in_frame) {
-                    // Start of frame: Allow 0xEE or 0xC8
+            // High-speed drain: read everything in the serial buffer
+            while (read(fd, &byte, 1) > 0) {
+                if (buffer.empty()) {
                     if (byte == CRSF_ADDRESS_RADIO_TRANSMITTER || byte == CRSF_SYNC_BYTE) {
-                        buffer.clear();
                         buffer.push_back(byte);
-                        in_frame = true;
                     }
                 } else {
                     buffer.push_back(byte);
-                    if (buffer.size() == 2) {
-                        expected_len = byte; // frame_len
-                    }
-                    if (expected_len > 0 && buffer.size() == 1 + expected_len) {
-                        // Full frame received
+                    if (buffer.size() >= 2 && buffer.size() == (buffer[1] + 2)) {
                         if (parse_crsf_frame(buffer, telemetry)) {
-                            {
-                                std::lock_guard<std::mutex> lock(console_mutex);
-                                print_telemetry(telemetry);
-                            }
-                        } else {
-                            // Optional: Dump bad frame for debugging
-                            // Comment out to remove spam
-                            // {
-                            //     std::lock_guard<std::mutex> lock(console_mutex);
-                            //     std::cerr << "Bad frame (hex): ";
-                            //     for (auto b : buffer) std::cerr << std::hex << (int)b << " ";
-                            //     std::cerr << std::endl;
-                            // }
+                            std::lock_guard<std::mutex> lock(console_mutex);
+                            print_telemetry(telemetry);
                         }
-                        in_frame = false;
-                        expected_len = 0;
+                        buffer.clear();
                     }
                 }
-            } else if (n < 0 && errno != EAGAIN) {
-                // Handle read error (e.g., port closed)
-                break;
             }
-            usleep(1000); // Small delay to avoid CPU spin
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
         }
     }
 
 public:
     bool begin(int baud_rate) {
-        // Checking Port 0 for both USB and ACM driver types
         const char* ports[] = {"/dev/ttyUSB0", "/dev/ttyACM0"};
         bool found = false;
         
@@ -126,13 +99,7 @@ public:
             }
         }
         
-        if (!found) {
-            {
-                std::lock_guard<std::mutex> lock(console_mutex);
-                perror("Error: Could not open /dev/ttyUSB0 or /dev/ttyACM0");
-            }
-            return false;
-        }
+        if (!found) return false;
 
         struct termios2 tty;
         if (ioctl(fd, TCGETS2, &tty) != 0) return false;
@@ -149,7 +116,6 @@ public:
         tty.c_oflag = 0;
 
         if (ioctl(fd, TCSETS2, &tty) != 0) return false;
-        
         ioctl(fd, TCFLSH, TCIFLUSH); 
         
         running = true;
@@ -163,10 +129,6 @@ public:
         if (fd >= 0) {
             close(fd);
             fd = -1;
-            {
-                std::lock_guard<std::mutex> lock(console_mutex);
-                std::cout << "Communication port closed." << std::endl;
-            }
         }
     }
 
@@ -198,12 +160,7 @@ public:
         }
 
         packet[25] = crc8(&packet[2], 23);
-        int written = write(fd, packet, 26);
-        // Comment out to remove spam
-        // {
-        //     std::lock_guard<std::mutex> lock(console_mutex);
-        //     std::cout << "Sent channels frame (" << written << " bytes)" << std::endl;
-        // }
+        write(fd, packet, 26);
     }
 };
 

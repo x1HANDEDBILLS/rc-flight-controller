@@ -15,8 +15,8 @@
 #include <unistd.h>
 #include <cstring> 
 #include <mutex>
-#include <csignal>  // Added for signal handling
-#include <atomic>   // Added for thread-safe flag
+#include <csignal> 
+#include <atomic> 
 
 #include "input_tuning.h"
 #include "InputMapper.h"
@@ -27,12 +27,17 @@
 const std::string MAPPER_PATH = "/home/pi4/rc-flight-controller/src/config/inputmapper.json";
 const std::string TUNING_PATH = "/home/pi4/rc-flight-controller/src/config/inputtuning.json";
 
+// --- GLOBAL OBJECTS ---
 CRSFSender crsf_sender;
 InputMapper mapper;
 InputMixer mixer;
 SDL_GameController* controller = nullptr;
 bool controller_connected = false;
+
+// --- MUTEX DEFINITIONS ---
+// These allocate the actual memory that the 'extern' declarations in headers look for.
 std::mutex mapper_mutex; 
+std::mutex console_mutex; 
 
 // --- GLOBAL ATOMIC FOR GRACEFUL SHUTDOWN ---
 std::atomic<bool> g_running(true);
@@ -75,7 +80,6 @@ void socket_listener() {
     servaddr.sin_port = htons(5005); 
     bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr));
 
-    // Make the socket non-blocking so it doesn't hang the thread on shutdown
     struct timeval tv;
     tv.tv_sec = 0;
     tv.tv_usec = 500000; // 0.5s timeout
@@ -136,12 +140,9 @@ void load_system_config() {
 }
 
 int main(int argc, char* argv[]) {
-    // Register signals for graceful exit
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // --- BAUD RATE SELECTION (MODIFIED FOR NOMAD) ---
-    // Default to 420000 (EdgeTX standard). Use argv[1] if Python passes a specific speed.
     int baud_rate = 420000; 
     if (argc > 1) {
         try {
@@ -153,9 +154,8 @@ int main(int argc, char* argv[]) {
 
     if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0) return 1;
     
-    // Pass the baud rate to the new CRSFSender::begin
     if (!crsf_sender.begin(baud_rate)) {
-        std::cerr << "CRSF Error: Failed to open port at " << baud_rate << " baud." << std::endl;
+        std::cerr << "CRSF Error: Failed to open port." << std::endl;
         return 1;
     }
 
@@ -237,7 +237,6 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::microseconds(950));
     }
 
-    // --- CLEAN SHUTDOWN ---
     std::cout << "Shutting down gracefully..." << std::endl;
     crsf_sender.close_port();
     if (listener_thread.joinable()) listener_thread.join();
