@@ -99,7 +99,7 @@ struct TelemetryData {
 };
 
 // CRC8 function (table-based for consistency with sender)
-uint8_t crsf_crc8(const uint8_t* data, uint8_t len) {
+static inline uint8_t crsf_crc8(const uint8_t* data, uint8_t len) {
     static const uint8_t crc_table[256] = {
         0x00, 0xD5, 0x7F, 0xAA, 0xFE, 0x2B, 0x81, 0x54, 0x29, 0xFC, 0x56, 0x83, 0xD7, 0x02, 0xA8, 0x7D,
         0x52, 0x87, 0x2D, 0xF8, 0xAC, 0x79, 0xD3, 0x06, 0x7B, 0xAE, 0x04, 0xD1, 0x85, 0x50, 0xFA, 0x2F,
@@ -126,12 +126,12 @@ uint8_t crsf_crc8(const uint8_t* data, uint8_t len) {
 }
 
 // Parse function
-bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
+inline bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
     if (frame.size() < 4) return false;
 
     uint8_t addr = frame[0];
     uint8_t len = frame[1];
-    if (frame.size() != (size_t)(1 + len)) return false;
+    if (frame.size() != (size_t)(len + 2)) return false;
     if (addr != CRSF_ADDRESS_RADIO_TRANSMITTER && addr != CRSF_SYNC_BYTE) return false;
 
     uint8_t type = frame[2];
@@ -141,13 +141,12 @@ bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
     uint8_t computed_crc = crsf_crc8(&frame[2], len - 1);
     uint8_t received_crc = frame.back();
     if (computed_crc != received_crc) {
-        std::cerr << "CRC mismatch: " << (int)computed_crc << " vs " << (int)received_crc << std::endl;
         return false;
     }
 
     switch (type) {
         case CRSF_FRAMETYPE_LINK_STATISTICS: {
-            if (payload_len != 10) return false;
+            if (payload_len < 10) return false;
             data.uplink_rssi_1 = static_cast<int8_t>(payload[0]);
             data.uplink_rssi_2 = static_cast<int8_t>(payload[1]);
             data.uplink_link_quality = payload[2];
@@ -168,38 +167,32 @@ bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
             std::memcpy(&data.gps_heading, payload + 10, 2);
             std::memcpy(&data.gps_altitude, payload + 12, 2);
             data.gps_satellites = payload[14];
+            
             data.gps_latitude = __builtin_bswap32(data.gps_latitude);
             data.gps_longitude = __builtin_bswap32(data.gps_longitude);
             data.gps_groundspeed = __builtin_bswap16(data.gps_groundspeed);
             data.gps_heading = __builtin_bswap16(data.gps_heading);
             data.gps_altitude = __builtin_bswap16(data.gps_altitude);
-            // Extended GPS (if payload longer)
-            if (payload_len > 15) {
-                std::memcpy(&data.gps_hdop, payload + 15, 4);
-                data.gps_hdop = __builtin_bswap32(*reinterpret_cast<uint32_t*>(&data.gps_hdop));
+
+            if (payload_len >= 19) {
+                uint32_t hdop_raw;
+                std::memcpy(&hdop_raw, payload + 15, 4);
+                data.gps_hdop = __builtin_bswap32(hdop_raw) / 100.0f;
             }
             break;
         }
         case CRSF_FRAMETYPE_BATTERY_SENSOR: {
-            if (payload_len != 8) return false;
+            if (payload_len < 8) return false;
             std::memcpy(&data.battery_voltage, payload + 0, 2);
             std::memcpy(&data.battery_current, payload + 2, 2);
             data.battery_capacity_used = (payload[4] << 16) | (payload[5] << 8) | payload[6];
             data.battery_remaining = payload[7];
             data.battery_voltage = __builtin_bswap16(data.battery_voltage);
             data.battery_current = __builtin_bswap16(data.battery_current);
-            if (payload_len > 8) {
-                data.cell_voltages.clear();
-                for (size_t i = 8; i < payload_len; i += 2) {
-                    uint16_t cell_v;
-                    std::memcpy(&cell_v, payload + i, 2);
-                    data.cell_voltages.push_back(__builtin_bswap16(cell_v) / 100.0f);
-                }
-            }
             break;
         }
         case CRSF_FRAMETYPE_VARIO: {
-            if (payload_len != 2) return false;
+            if (payload_len < 2) return false;
             std::memcpy(&data.vario_vertical_speed, payload, 2);
             data.vario_vertical_speed = __builtin_bswap16(data.vario_vertical_speed);
             break;
@@ -212,18 +205,6 @@ bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
             data.attitude_pitch = __builtin_bswap16(data.attitude_pitch);
             data.attitude_roll = __builtin_bswap16(data.attitude_roll);
             data.attitude_yaw = __builtin_bswap16(data.attitude_yaw);
-            // Extended: Accel/Gyro/Mag if longer payload (e.g., 24 bytes for all)
-            if (payload_len >= 24) {
-                std::memcpy(&data.accel_x, payload + 6, 4);
-                std::memcpy(&data.accel_y, payload + 10, 4);
-                std::memcpy(&data.accel_z, payload + 14, 4);
-                std::memcpy(&data.gyro_x, payload + 18, 4);
-                std::memcpy(&data.gyro_y, payload + 22, 4);
-                std::memcpy(&data.gyro_z, payload + 26, 4);
-                std::memcpy(&data.mag_x, payload + 30, 4);
-                std::memcpy(&data.mag_y, payload + 34, 4);
-                std::memcpy(&data.mag_z, payload + 38, 4);
-            }
             break;
         }
         case CRSF_FRAMETYPE_FLIGHT_MODE: {
@@ -232,23 +213,20 @@ bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
             break;
         }
         case CRSF_FRAMETYPE_AIRSPEED: {
-            if (payload_len != 2) return false;
+            if (payload_len < 2) return false;
             std::memcpy(&data.airspeed, payload, 2);
             data.airspeed = __builtin_bswap16(data.airspeed);
             break;
         }
         case CRSF_FRAMETYPE_ESC_TELEMETRY: {
-            if (payload_len < 8) return false;
+            if (payload_len < 2) return false;
             std::memcpy(&data.rpm, payload + 0, 2);
             data.rpm = __builtin_bswap16(data.rpm);
-            data.esc_temperature = payload[2];
-            if (payload_len > 3) {
-                std::memcpy(&data.current_sensor, payload + 3, 4);
-            }
+            if (payload_len >= 3) data.esc_temperature = payload[2];
             break;
         }
         case CRSF_FRAMETYPE_FUEL: {
-            if (payload_len != 2) return false;
+            if (payload_len < 2) return false;
             std::memcpy(&data.fuel_level, payload, 2);
             data.fuel_level = __builtin_bswap16(data.fuel_level);
             break;
@@ -263,76 +241,32 @@ bool parse_crsf_frame(const std::vector<uint8_t>& frame, TelemetryData& data) {
             break;
         }
         default:
-            std::cerr << "Unknown type: 0x" << std::hex << (int)type << std::endl;
             return false;
     }
     return true;
 }
 
 // Expanded print function
-void print_telemetry(const TelemetryData& data) {
-    std::cout << "Link Telemetry:" << std::endl;
-    std::cout << "  1RSS: " << (int)data.uplink_rssi_1 << " dBm" << std::endl;
-    std::cout << "  2RSS: " << (int)data.uplink_rssi_2 << " dBm" << std::endl;
-    std::cout << "  RQly: " << (int)data.uplink_link_quality << " %" << std::endl;
-    std::cout << "  RSNR: " << (int)data.uplink_snr << " dB" << std::endl;
-    std::cout << "  ANT: " << (int)data.active_antenna << std::endl;
-    std::cout << "  RFMD: " << (int)data.rf_mode << std::endl;
-    std::cout << "  TPWR: " << (int)data.uplink_tx_power << std::endl;
-    std::cout << "  TRSS: " << (int)data.downlink_rssi << " dBm" << std::endl;
-    std::cout << "  TQly: " << (int)data.downlink_link_quality << " %" << std::endl;
-    std::cout << "  TSNR: " << (int)data.downlink_snr << " dB" << std::endl;
+inline void print_telemetry(const TelemetryData& data) {
+    std::cout << "\033[2J\033[H"; // Clear screen for readability
+    std::cout << "--- CRSF Link Telemetry ---" << std::endl;
+    std::cout << " 1RSS: " << (int)data.uplink_rssi_1 << " dBm | 2RSS: " << (int)data.uplink_rssi_2 << " dBm" << std::endl;
+    std::cout << " LQly: " << (int)data.uplink_link_quality << " %   | SNR:  " << (int)data.uplink_snr << " dB" << std::endl;
+    std::cout << " Mode: " << (int)data.rf_mode << " | PWR: " << (int)data.uplink_tx_power << " mW" << std::endl;
 
-    std::cout << "GPS Telemetry:" << std::endl;
-    std::cout << "  Latitude: " << data.gps_latitude / 10000000.0 << " deg" << std::endl;
-    std::cout << "  Longitude: " << data.gps_longitude / 10000000.0 << " deg" << std::endl;
-    std::cout << "  Groundspeed: " << data.gps_groundspeed / 10.0 << " km/h" << std::endl;
-    std::cout << "  Heading: " << data.gps_heading / 100.0 << " deg" << std::endl;
-    std::cout << "  Altitude: " << (data.gps_altitude - 1000) << " m" << std::endl;
-    std::cout << "  Satellites: " << (int)data.gps_satellites << std::endl;
-    std::cout << "  HDOP: " << data.gps_hdop << std::endl;
-    std::cout << "  Distance: " << data.gps_distance << " m" << std::endl;
-    std::cout << "  Traveled Distance: " << data.gps_traveled_distance << " m" << std::endl;
-    std::cout << "  Time/Date: " << data.gps_time_date << std::endl;
+    std::cout << "\n--- GPS Telemetry ---" << std::endl;
+    std::cout << " Lat: " << data.gps_latitude / 10000000.0 << " | Lon: " << data.gps_longitude / 10000000.0 << std::endl;
+    std::cout << " Spd: " << data.gps_groundspeed / 10.0 << " km/h | Alt: " << (int)data.gps_altitude - 1000 << " m" << std::endl;
+    std::cout << " Sats: " << (int)data.gps_satellites << " | HDOP: " << data.gps_hdop << std::endl;
 
-    std::cout << "Battery Telemetry:" << std::endl;
-    std::cout << "  Voltage: " << data.battery_voltage / 100.0 << " V" << std::endl;
-    std::cout << "  Current: " << data.battery_current / 100.0 << " A" << std::endl;
-    std::cout << "  Capacity Used: " << data.battery_capacity_used << " mAh" << std::endl;
-    std::cout << "  Remaining: " << (int)data.battery_remaining << " %" << std::endl;
-    std::cout << "  Cell Voltages: ";
-    for (auto v : data.cell_voltages) std::cout << v << " ";
-    std::cout << std::endl;
-    std::cout << "  RxBt: " << data.rx_battery / 100.0 << " V" << std::endl;
+    std::cout << "\n--- Battery Telemetry ---" << std::endl;
+    std::cout << " Volt: " << data.battery_voltage / 10.0 << " V | Curr: " << data.battery_current / 10.0 << " A" << std::endl;
+    std::cout << " Cap:  " << data.battery_capacity_used << " mAh | Rem: " << (int)data.battery_remaining << " %" << std::endl;
 
-    std::cout << "Altitude/Speed:" << std::endl;
-    std::cout << "  Vertical Speed: " << data.vario_vertical_speed / 100.0 << " m/s" << std::endl;
-    std::cout << "  Baro Altitude: " << data.baro_altitude << " m" << std::endl;
-    std::cout << "  Airspeed: " << data.airspeed / 10.0 << " km/h" << std::endl;
-
-    std::cout << "Attitude:" << std::endl;
-    std::cout << "  Pitch: " << data.attitude_pitch / 10000.0 << " rad" << std::endl;
-    std::cout << "  Roll: " << data.attitude_roll / 10000.0 << " rad" << std::endl;
-    std::cout << "  Yaw: " << data.attitude_yaw / 10000.0 << " rad" << std::endl;
-    std::cout << "  Accel X/Y/Z: " << data.accel_x << " / " << data.accel_y << " / " << data.accel_z << " g" << std::endl;
-    std::cout << "  Gyro X/Y/Z: " << data.gyro_x << " / " << data.gyro_y << " / " << data.gyro_z << " deg/s" << std::endl;
-    std::cout << "  Mag X/Y/Z: " << data.mag_x << " / " << data.mag_y << " / " << data.mag_z << " Gauss" << std::endl;
-    std::cout << "  Compass Heading: " << data.compass_heading << " deg" << std::endl;
-
-    std::cout << "Vehicle/FC:" << std::endl;
-    std::cout << "  Flight Mode: " << data.flight_mode << std::endl;
-    std::cout << "  Arm Status: " << (int)data.arm_status << std::endl;
-    std::cout << "  RPM: " << data.rpm << std::endl;
-    std::cout << "  ESC Temp: " << (int)data.esc_temperature << " °C" << std::endl;
-    std::cout << "  Headspeed: " << data.headspeed << std::endl;
-    std::cout << "  MCU Temp: " << (int)data.mcu_temperature << " °C" << std::endl;
-    std::cout << "  Load: " << (int)data.load << " %" << std::endl;
-    std::cout << "  VTX: " << data.vtx_telemetry << std::endl;
-    std::cout << "  Heartbeat: " << (int)data.heartbeat_status << std::endl;
-    std::cout << "  Fuel Level: " << data.fuel_level << " %" << std::endl;
-    std::cout << "  Throttle: " << (int)data.throttle << " %" << std::endl;
-    std::cout << "  Current Sensor: " << data.current_sensor << " A" << std::endl;
-
+    std::cout << "\n--- Attitude & Flight ---" << std::endl;
+    std::cout << " Pitch: " << data.attitude_pitch / 10000.0 << " rad" << std::endl;
+    std::cout << " Roll:  " << data.attitude_roll / 10000.0 << " rad" << std::endl;
+    std::cout << " Mode:  " << data.flight_mode << " | Arm: " << (data.arm_status ? "YES" : "NO") << std::endl;
     std::cout << "------------------------" << std::endl;
 }
 

@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <asm/termbits.h> 
+#include <linux/serial.h>
 #include <cstring>
 #include <stdint.h>
 #include <thread>
@@ -58,13 +59,13 @@ private:
     void receive_loop() {
         TelemetryData telemetry;
         std::vector<uint8_t> buffer;
+        buffer.reserve(64);
         uint8_t byte;
 
         while (running) {
-            // High-speed drain: read everything in the serial buffer
             while (read(fd, &byte, 1) > 0) {
                 if (buffer.empty()) {
-                    if (byte == CRSF_ADDRESS_RADIO_TRANSMITTER || byte == CRSF_SYNC_BYTE) {
+                    if (byte == 0xC8 || byte == 0xEE) {
                         buffer.push_back(byte);
                     }
                 } else {
@@ -78,7 +79,7 @@ private:
                     }
                 }
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
@@ -92,7 +93,7 @@ public:
             if (fd >= 0) {
                 {
                     std::lock_guard<std::mutex> lock(console_mutex);
-                    std::cout << "Successfully opened " << p << std::endl;
+                    std::cout << "Successfully opened " << p << " at " << baud_rate << " baud." << std::endl;
                 }
                 found = true;
                 break;
@@ -108,7 +109,6 @@ public:
         tty.c_cflag |= BOTHER;
         tty.c_ispeed = baud_rate;
         tty.c_ospeed = baud_rate;
-
         tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8 | CLOCAL | CREAD;
         tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS);
         tty.c_iflag &= ~(IXON | IXOFF | IXANY);
@@ -116,6 +116,13 @@ public:
         tty.c_oflag = 0;
 
         if (ioctl(fd, TCSETS2, &tty) != 0) return false;
+
+        struct serial_struct ser_info;
+        if (ioctl(fd, TIOCGSERIAL, &ser_info) == 0) {
+            ser_info.flags |= ASYNC_LOW_LATENCY;
+            ioctl(fd, TIOCSSERIAL, &ser_info);
+        }
+
         ioctl(fd, TCFLSH, TCIFLUSH); 
         
         running = true;
@@ -135,7 +142,7 @@ public:
     void send_channels(const int* logical_channels) {
         if (fd < 0) return;
 
-        uint8_t packet[26] = {0};
+        uint8_t packet[26];
         packet[0] = 0xEE; 
         packet[1] = 24;   
         packet[2] = 0x16; 
@@ -147,7 +154,8 @@ public:
         for (int i = 0; i < CRSF_CHANNELS_COUNT; i++) {
             float norm = (logical_channels[i] + 32768) / 65535.0f;
             uint32_t val = (uint32_t)(norm * 1639.0f + 172.0f);
-            val = std::max(172U, std::min(1811U, val));
+            if (val < 172) val = 172;
+            if (val > 1811) val = 1811;
 
             bits |= val << bitsavailable;
             bitsavailable += CRSF_CH_BITS;

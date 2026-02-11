@@ -35,30 +35,29 @@ SDL_GameController* controller = nullptr;
 bool controller_connected = false;
 
 // --- MUTEX DEFINITIONS ---
-// These allocate the actual memory that the 'extern' declarations in headers look for.
 std::mutex mapper_mutex; 
 std::mutex console_mutex; 
 
 // --- GLOBAL ATOMIC FOR GRACEFUL SHUTDOWN ---
 std::atomic<bool> g_running(true);
 
-// --- STATE VARIABLES ---
-float g_l_dz = 0.05f;
-float g_r_dz = 0.05f;
-float g_sens = 1.0f;
-float g_expo = 0.0f;
-int   g_curve = 0;
-float g_smooth = 0.2f;
-bool  g_cine_on = false;
-float g_cine_spd = 8.0f;
-float g_cine_acc = 3.5f;
+// --- STATE VARIABLES (Atomic for thread safety) ---
+std::atomic<float> g_l_dz{0.05f};
+std::atomic<float> g_r_dz{0.05f};
+std::atomic<float> g_sens{1.0f};
+std::atomic<float> g_expo{0.0f};
+std::atomic<int>   g_curve{0};
+std::atomic<float> g_smooth{0.2f};
+std::atomic<bool>  g_cine_on{false};
+std::atomic<float> g_cine_spd{8.0f};
+std::atomic<float> g_cine_acc{3.5f};
 
 // Physics Persistence
 int16_t prev_vals[6] = {0};
 float cine_vel[6] = {0.0f};
 float cine_pos[6] = {0.0f};
 
-// Signal Handler to catch 'sudo systemctl stop' or 'sudo reboot'
+// Signal Handler
 void signal_handler(int signal) {
     g_running = false;
 }
@@ -104,7 +103,7 @@ void socket_listener() {
                 else if (msg.find("RATE:") == 0)      g_sens = std::stof(msg.substr(5));
                 else if (msg.find("EXPO:") == 0)      g_expo = std::stof(msg.substr(5));
                 else if (msg.find("CURVE:") == 0)     g_curve = std::stoi(msg.substr(6));
-                else if (msg.find("SMOOTH:") == 0)     g_smooth = std::stof(msg.substr(7));
+                else if (msg.find("SMOOTH:") == 0)    g_smooth = std::stof(msg.substr(7));
                 else if (msg.find("CINE_ON:") == 0)   g_cine_on = (std::stoi(msg.substr(8)) == 1);
                 else if (msg.find("CINE_SPD:") == 0)  g_cine_spd = std::stof(msg.substr(9));
                 else if (msg.find("CINE_ACC:") == 0)  g_cine_acc = std::stof(msg.substr(9));
@@ -199,9 +198,10 @@ int main(int argc, char* argv[]) {
             true_raw = raw_signals; 
 
             for (int i = 0; i < 6; i++) {
-                float dz = (i < 2) ? g_l_dz : (i < 4 ? g_r_dz : 0.05f);
-                apply_tuning(raw_signals[i], dz, g_sens, g_smooth, 
-                               g_curve, g_expo, g_cine_on, g_cine_spd, g_cine_acc,
+                float dz = (i < 2) ? g_l_dz.load() : (i < 4 ? g_r_dz.load() : 0.05f);
+                apply_tuning(raw_signals[i], dz, g_sens.load(), g_smooth.load(), 
+                               g_curve.load(), g_expo.load(), g_cine_on.load(), 
+                               g_cine_spd.load(), g_cine_acc.load(),
                                prev_vals[i], cine_vel[i], cine_pos[i], 0.001f);
             }
         } else {
@@ -234,7 +234,13 @@ int main(int argc, char* argv[]) {
                 fclose(f);
             }
         }
-        std::this_thread::sleep_for(std::chrono::microseconds(950));
+
+        // Precision timing to ensure 1000Hz loop
+        auto frame_end = std::chrono::steady_clock::now();
+        auto frame_duration = std::chrono::duration_cast<std::chrono::microseconds>(frame_end - frame_start);
+        if (frame_duration < std::chrono::microseconds(1000)) {
+            std::this_thread::sleep_for(std::chrono::microseconds(1000) - frame_duration);
+        }
     }
 
     std::cout << "Shutting down gracefully..." << std::endl;
