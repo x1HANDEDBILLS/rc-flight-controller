@@ -19,11 +19,11 @@
     ],
     "split_config": {
         "target_ch": -1,
-        "pos_id": 22,
-        "neg_id": 22,
-        "pos_center": false,
-        "pos_reverse": false,
-        "neg_center": false,
+        "pos_id": 15,
+        "neg_id": 16,
+        "pos_center": true,
+        "pos_reverse": true,
+        "neg_center": true,
         "neg_reverse": false
     }
 }

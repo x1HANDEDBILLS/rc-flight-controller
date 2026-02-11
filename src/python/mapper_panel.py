@@ -1,3 +1,5 @@
+# mapper_panel.py - UI for input mapping and split config
+
 import pygame
 import time
 import json
@@ -76,7 +78,7 @@ def load_mapper_settings():
 # Perform initial load on module import
 load_mapper_settings()
 
-def draw_mapper_panel(screen, rect, touch_down, touch_x, touch_y, raw_axes):
+def draw_mapper_panel(screen, rect, touch_down, touch_x, touch_y, raw_axes, tuned_signals=None):
     """Main rendering loop for the Mapper UI."""
     global CHANNEL_MAPS, SPLIT_CONFIG, last_interaction_time, current_page, selector_active_for_ch, selector_mode, selector_open_time
     
@@ -143,7 +145,7 @@ def draw_mapper_panel(screen, rect, touch_down, touch_x, touch_y, raw_axes):
             src_id = SPLIT_CONFIG[f"{s_key}_id"]
             
             # Pull live tuned data for visual feedback
-            raw_v = raw_axes[src_id] if src_id < 23 else -32768
+            raw_v = tuned_signals[src_id] if tuned_signals and src_id < 23 else (raw_axes[src_id] if src_id < 23 else -32768)
             tuned_v = get_tuned_val(raw_v, SPLIT_CONFIG[f"{s_key}_center"], SPLIT_CONFIG[f"{s_key}_reverse"])
             
             pygame.draw.rect(screen, (40, 45, 50), btn_rect, border_radius=10)
@@ -159,7 +161,7 @@ def draw_mapper_panel(screen, rect, touch_down, touch_x, touch_y, raw_axes):
                 full_key = f"{s_key}_{opt}"
                 pygame.draw.rect(screen, (60, 60, 70), cb_rect, border_radius=4)
                 if SPLIT_CONFIG[full_key]:
-                    pygame.draw.line(screen, (0, 255, 100), (cb_rect.x+5, cb_rect.y+12), (cb_rect.x+10, cb_rect.bottom-5), 3)
+                    pygame.draw.line(screen, (0, 255, 100), (cb_rect.x+5, cb_rect.y+12), (cb_rect.x+20, cb_rect.bottom-5), 3)
                     pygame.draw.line(screen, (0, 255, 100), (cb_rect.x+10, cb_rect.bottom-5), (cb_rect.right-5, cb_rect.y+5), 3)
                 
                 lbl = small_font.render(opt.capitalize(), True, (200, 200, 200))
@@ -211,7 +213,8 @@ def draw_selector_grid(screen, rect, touch_down, touch_x, touch_y, raw_data):
 
     max_range = 16 if "ch" in selector_mode else 23 
     for i in range(max_range):
-        bx, by = start_x + (i%5 * 118), start_y + (i//5 * 63)
+        bx = start_x + (i%5 * 118)
+        by = start_y + (i//5 * 63)
         btn_rect = pygame.Rect(bx, by, btn_w, btn_h)
         pygame.draw.rect(screen, (45, 45, 55), btn_rect, border_radius=6)
         

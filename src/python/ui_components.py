@@ -42,7 +42,7 @@ def draw_gear_button(screen, rect, pressed):
     pygame.draw.circle(screen, icon_color, center, inner_r, 4)
     pygame.draw.circle(screen, icon_color, center, hub_r, 3)
 
-def draw_settings_panel(screen, rect, touch_down, touch_x, touch_y, active_index, raw_signals):
+def draw_settings_panel(screen, rect, touch_down, touch_x, touch_y, active_index, raw_signals, tuned_signals=None):
     pygame.draw.rect(screen, (30, 30, 35), rect)
     pygame.draw.rect(screen, (80, 80, 90), rect, width=3)
     
@@ -86,7 +86,7 @@ def draw_settings_panel(screen, rect, touch_down, touch_x, touch_y, active_index
 
             if panel_name in ["Mapper", "Input"]:
                 # These panels return True if a slider/map was moved
-                if panel_func(screen, second_rect, touch_down, touch_x, touch_y, raw_signals):
+                if panel_func(screen, second_rect, touch_down, touch_x, touch_y, raw_signals, tuned_signals):
                     change_detected = True
             else:
                 panel_func(screen, second_rect, touch_down, touch_x, touch_y)

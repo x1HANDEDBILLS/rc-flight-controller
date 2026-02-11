@@ -20,7 +20,8 @@ TUNING_STATE = {
     "curve_type": 0, "expo": 0.0,
     "smoothing": 0.2, "global_rate": 1.0,
     "cine_on": False, 
-    "cine_intensity": 1.0, 
+    "cine_speed": 8.0,    
+    "cine_accel": 3.5,    
     "curve_lh_id": 0, "curve_lv_id": 1, "curve_rh_id": 2, "curve_rv_id": 3
 }
 
@@ -37,7 +38,8 @@ last_interaction_time = 0
 prev_states = {
     "l_dec": False, "l_inc": False, "r_dec": False, "r_inc": False,
     "e_dec": False, "e_inc": False, "s_dec": False, "s_inc": False,
-    "g_dec": False, "g_inc": False, "ci_dec": False, "ci_inc": False
+    "g_dec": False, "g_inc": False,
+    "csp_dec": False, "csp_inc": False, "cac_dec": False, "cac_inc": False 
 }
 last_release = {k: 0.0 for k in prev_states.keys()}
 
@@ -71,7 +73,7 @@ def load_settings():
 
 load_settings()
 
-def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_signals=None):
+def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_signals=None, tuned_signals=None):
     global RAW_INPUTS, current_page, last_interaction_time, selector_active_for, curve_menu_open, last_overlay_toggle
     if raw_signals: RAW_INPUTS = raw_signals
     
@@ -101,9 +103,9 @@ def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_sign
         l_res = draw_numeric_stepper(screen, l_x, l_y, TUNING_STATE["left_deadzone"], "Left Deadzone", touch_down, touch_x, touch_y)
         r_res = draw_numeric_stepper(screen, r_x, r_y, TUNING_STATE["right_deadzone"], "Right Deadzone", touch_down, touch_x, touch_y)
         
-        if draw_mapper_style_row(screen, l_x + 315, l_y - 8, "left_h_id", "left_v_id", touch_down, touch_x, touch_y):
+        if draw_mapper_style_row(screen, l_x + 315, l_y - 8, "left_h_id", "left_v_id", touch_down, touch_x, touch_y, tuned_signals):
             was_changed = True
-        if draw_mapper_style_row(screen, r_x + 315, r_y - 8, "right_h_id", "right_v_id", touch_down, touch_x, touch_y):
+        if draw_mapper_style_row(screen, r_x + 315, r_y - 8, "right_h_id", "right_v_id", touch_down, touch_x, touch_y, tuned_signals):
             was_changed = True
 
         curve_btn = pygame.Rect(rect.left + 10, r_y + 110, 220, 60)
@@ -120,10 +122,10 @@ def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_sign
         t_keys = ["curve_lh_id", "curve_lv_id", "curve_rh_id", "curve_rv_id"]
         t_labels = ["LH", "LV", "RH", "RV"]
         for i in range(4):
-            if draw_single_mapper_box(screen, pygame.Rect(target_x + (i * 125), curve_btn.y, 120, 60), t_keys[i], t_labels[i], touch_down, touch_x, touch_y):
+            if draw_single_mapper_box(screen, pygame.Rect(target_x + (i * 125), curve_btn.y, 120, 60), t_keys[i], t_labels[i], touch_down, touch_x, touch_y, tuned_signals):
                 was_changed = True
 
-        if handle_stepper_input(l_res, r_res, e_res, None, None, None):
+        if handle_stepper_input(l_res, r_res, e_res, None, None, None, None):
             was_changed = True
 
         if touch_down and curve_btn.collidepoint(touch_x, touch_y) and (time.time() - last_overlay_toggle > 0.5):
@@ -138,12 +140,17 @@ def draw_input_tuning_panel(screen, rect, touch_down, touch_x, touch_y, raw_sign
         
         s_res = draw_numeric_stepper(screen, s_x, s_y, TUNING_STATE["smoothing"], "Input Smoothing (Filter)", touch_down, touch_x, touch_y)
         g_res = draw_numeric_stepper(screen, g_x, g_y, TUNING_STATE["global_rate"], "Global Rate (Max Speed)", touch_down, touch_x, touch_y)
-        ci_res = draw_numeric_stepper(screen, s_x, c_y, TUNING_STATE["cine_intensity"], "Cinematic Intensity (1-10)", touch_down, touch_x, touch_y)
         
-        if draw_cinematic_row(screen, s_x + 350, c_y - 10, touch_down, touch_x, touch_y):
+        # Row 3: Cinematic Group (Checkbox Left, Steppers Right)
+        # 1. Checkbox
+        if draw_cinematic_row(screen, s_x - 55, c_y - 10, touch_down, touch_x, touch_y):
             was_changed = True
+            
+        # 2. Steppers (Shifted right to accommodate the checkbox + text)
+        csp_res = draw_numeric_stepper(screen, s_x + 220, c_y, TUNING_STATE["cine_speed"], "Max Speed", touch_down, touch_x, touch_y)
+        cac_res = draw_numeric_stepper(screen, s_x + 510, c_y, TUNING_STATE["cine_accel"], "Max Accel", touch_down, touch_x, touch_y)
         
-        if handle_stepper_input(None, None, None, s_res, g_res, ci_res):
+        if handle_stepper_input(None, None, None, s_res, g_res, csp_res, cac_res):
             was_changed = True
 
     draw_page_indicators(screen, rect)
@@ -169,35 +176,30 @@ def draw_cinematic_row(screen, x, y, touch_down, tx, ty):
         last_interaction_time = time.time()
         changed = True
 
-    lbl = pygame.font.SysFont("monospace", 16, bold=True).render("CINEMATIC MODE", True, (0, 200, 255))
-    screen.blit(lbl, (box_rect.right + 15, box_rect.centery - 10))
+    lbl = pygame.font.SysFont("monospace", 15, bold=True).render("CINEMATIC", True, (0, 200, 255))
+    screen.blit(lbl, (box_rect.x, box_rect.y - 18))
     return changed
 
-def handle_stepper_input(l, r, e, s, g, ci):
+def handle_stepper_input(l, r, e, s, g, csp, cac):
     global prev_states, last_release
     now = time.time()
     changed = False
     checks = []
     
-    # Deadzones: 0.1 increments, 0.0 to 5.0 (50% max)
     if l: checks.extend([("l_dec", l[1], "left_deadzone", -0.1, 0.0, 5.0, "L_DZ"), ("l_inc", l[3], "left_deadzone", 0.1, 0.0, 5.0, "L_DZ")])
     if r: checks.extend([("r_dec", r[1], "right_deadzone", -0.1, 0.0, 5.0, "R_DZ"), ("r_inc", r[3], "right_deadzone", 0.1, 0.0, 5.0, "R_DZ")])
-    
-    # UPDATED EXPO: Range -10.0 to 10.0, Increment 0.1
     if e: checks.extend([("e_dec", e[1], "expo", -0.1, -10.0, 10.0, "EXPO"), ("e_inc", e[3], "expo", 0.1, -10.0, 10.0, "EXPO")])
-    
     if s: checks.extend([("s_dec", s[1], "smoothing", -0.05, 0, 1, "SMOOTH"), ("s_inc", s[3], "smoothing", 0.05, 0, 1, "SMOOTH")])
     if g: checks.extend([("g_dec", g[1], "global_rate", -0.1, 0.1, 3.0, "RATE"), ("g_inc", g[3], "global_rate", 0.1, 0.1, 3.0, "RATE")])
-    if ci: checks.extend([("ci_dec", ci[1], "cine_intensity", -0.1, 1.0, 10.0, "CINE_VAL"), ("ci_inc", ci[3], "cine_intensity", 0.1, 1.0, 10.0, "CINE_VAL")])
+    
+    if csp: checks.extend([("csp_dec", csp[1], "cine_speed", -0.5, 0.1, 20.0, "CINE_SPD"), ("csp_inc", csp[3], "cine_speed", 0.5, 0.1, 20.0, "CINE_SPD")])
+    if cac: checks.extend([("cac_dec", cac[1], "cine_accel", -0.1, 0.1, 25.0, "CINE_ACC"), ("cac_inc", cac[3], "cine_accel", 0.1, 0.1, 25.0, "CINE_ACC")])
 
     for key, pressed, target, delta, v_min, v_max, udp_key in checks:
-        # Only trigger on the transition from pressed to released (prevents "stuck" buttons)
         if not pressed and prev_states[key] and (now - last_release[key]) >= 0.05:
-            # We now use round(..., 1) for everything to keep it consistent with your "clean" UI
-            new_val = round(max(v_min, min(v_max, TUNING_STATE[target] + delta)), 1)
+            new_val = round(max(v_min, min(v_max, TUNING_STATE[target] + delta)), 2)
             TUNING_STATE[target] = new_val
             
-            # Special case for Deadzones: Map UI (1.0) to Flight Logic (0.10)
             if udp_key in ["L_DZ", "R_DZ"]:
                 stream_to_cpp(udp_key, round(new_val / 10.0, 2))
             else:
@@ -209,14 +211,14 @@ def handle_stepper_input(l, r, e, s, g, ci):
         prev_states[key] = pressed
     return changed
 
-def draw_mapper_style_row(screen, x, y, h_key, v_key, touch_down, tx, ty):
+def draw_mapper_style_row(screen, x, y, h_key, v_key, touch_down, tx, ty, tuned_signals):
     changed = False
     for i, k in enumerate([h_key, v_key]):
-        if draw_single_mapper_box(screen, pygame.Rect(x + (i * 148), y, 140, 58), k, ["H-AXIS", "V-AXIS"][i], touch_down, tx, ty):
+        if draw_single_mapper_box(screen, pygame.Rect(x + (i * 148), y, 140, 58), k, ["H-AXIS", "V-AXIS"][i], touch_down, tx, ty, tuned_signals):
             changed = True
     return changed
 
-def draw_single_mapper_box(screen, rect, state_key, label, touch_down, tx, ty):
+def draw_single_mapper_box(screen, rect, state_key, label, touch_down, tx, ty, tuned_signals):
     global selector_active_for, last_overlay_toggle
     pygame.draw.rect(screen, (20, 22, 28), rect, border_radius=8)
     pygame.draw.rect(screen, (0, 255, 120), rect, 2, border_radius=8)
@@ -227,8 +229,8 @@ def draw_single_mapper_box(screen, rect, state_key, label, touch_down, tx, ty):
     if id_val is not None and id_val < 23:
         v_txt = pygame.font.SysFont("monospace", 24, bold=True).render(f"ID {id_val:02}", True, (255, 255, 255))
         screen.blit(v_txt, (rect.x + 8, rect.y + 18))
-        raw_v = int(RAW_INPUTS[id_val]) if id_val < len(RAW_INPUTS) else 0
-        screen.blit(pygame.font.SysFont("monospace", 16, bold=True).render(str(raw_v), True, (0, 255, 100)), (rect.x + 8, rect.bottom - 22))
+        tuned_v = int(tuned_signals[id_val]) if tuned_signals and id_val < len(tuned_signals) else 0
+        screen.blit(pygame.font.SysFont("monospace", 16, bold=True).render(str(tuned_v), True, (0, 255, 100)), (rect.x + 8, rect.bottom - 22))
         
     if touch_down and rect.collidepoint(tx, ty) and (time.time() - last_overlay_toggle > 0.5):
         selector_active_for = state_key
@@ -249,6 +251,10 @@ def draw_id_selector_overlay(screen, rect, touch_down, tx, ty):
         is_sel = TUNING_STATE.get(selector_active_for) == i
         pygame.draw.rect(screen, (0, 80, 40) if is_sel else (45, 45, 55), btn, border_radius=6)
         screen.blit(pygame.font.SysFont("monospace", 17, bold=True).render(f"ID {i:02}", True, (255, 255, 255)), (btn.x + 8, btn.y + 5))
+        
+        raw_v = int(RAW_INPUTS[i]) if i < len(RAW_INPUTS) else 0
+        v_txt = pygame.font.SysFont("monospace", 17, bold=True).render(str(raw_v), True, (0, 255, 100))
+        screen.blit(v_txt, (btn.x + 8, btn.y + 28))
         
         if touch_down and btn.collidepoint(tx, ty) and (time.time() - last_overlay_toggle > 0.5):
             TUNING_STATE[selector_active_for] = i

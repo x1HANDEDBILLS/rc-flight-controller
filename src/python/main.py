@@ -16,35 +16,44 @@ from config import *
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 ENGINE_ADDR = ("127.0.0.1", 5005)
 
-def sync_to_engine():
+def sync_to_engine(retries=3, delay=1.0):
     """
     Sends the current mapping and tuning rules to the C++ engine.
     This bridges the gap between Python (UI) and C++ (Flight Logic).
+    Added retries to ensure sync on startup if C++ listener not ready.
     """
-    try:
-        # 1. SYNC CHANNEL MAPS
-        m_str = ",".join(map(str, CHANNEL_MAPS))
-        s = SPLIT_CONFIG
-        split_data = f"{s['target_ch']},{s['pos_id']},{s['neg_id']},{int(s['pos_center'])},{int(s['pos_reverse'])},{int(s['neg_center'])},{int(s['neg_reverse'])}"
-        packet = f"SET_MAP|{m_str}|{split_data}"
-        udp_sock.sendto(packet.encode(), ENGINE_ADDR)
+    print("Syncing configs to C++ engine...")
+    for attempt in range(retries):
+        try:
+            # 1. SYNC CHANNEL MAPS
+            m_str = ",".join(map(str, CHANNEL_MAPS))
+            s = SPLIT_CONFIG
+            split_data = f"{s['target_ch']},{s['pos_id']},{s['neg_id']},{int(s['pos_center'])},{int(s['pos_reverse'])},{int(s['neg_center'])},{int(s['neg_reverse'])}"
+            packet = f"SET_MAP|{m_str}|{split_data}"
+            udp_sock.sendto(packet.encode(), ENGINE_ADDR)
 
-# 2. SYNC TUNING PARAMS (Smoothing, Rates, Cinematic, Deadzones)
-        t = TUNING_STATE
-        params = [
-            f"SMOOTH:{t['smoothing']}",
-            f"RATE:{t['global_rate']}",
-            f"EXPO:{t['expo']}",
-            f"CINE_ON:{int(t['cine_on'])}",
-            f"CINE_VAL:{t['cine_intensity']}",
-            f"L_DZ:{round(t['left_deadzone'] / 10.0, 2)}",  # <--- Change this line
-            f"R_DZ:{round(t['right_deadzone'] / 10.0, 2)}"   # <--- Change this line
-        ]
-        for p_msg in params:
-            udp_sock.sendto(p_msg.encode(), ENGINE_ADDR)
+            # 2. SYNC TUNING PARAMS (Smoothing, Rates, Cinematic, Deadzones)
+            t = TUNING_STATE
+            params = [
+                f"SMOOTH:{t['smoothing']}",
+                f"RATE:{t['global_rate']}",
+                f"EXPO:{t['expo']}",
+                f"CINE_ON:{int(t['cine_on'])}",
+                f"CINE_SPD:{t['cine_speed']}",    # UPDATED: Replaced CINE_VAL with CINE_SPD
+                f"CINE_ACC:{t['cine_accel']}",   # UPDATED: Added CINE_ACC
+                f"L_DZ:{round(t['left_deadzone'] / 10.0, 2)}",
+                f"R_DZ:{round(t['right_deadzone'] / 10.0, 2)}"
+            ]
+            for p_msg in params:
+                udp_sock.sendto(p_msg.encode(), ENGINE_ADDR)
+            print("Sync complete.")
+            return True  # Success
 
-    except Exception as e:
-        print(f"UDP Sync Error: {e}")
+        except Exception as e:
+            print(f"UDP Sync Attempt {attempt+1} Error: {e}. Retrying in {delay}s...")
+            time.sleep(delay)
+    print("Sync failed after retries. C++ may not be running or port issue.")
+    return False
 
 # Initialize configs and sync once on startup
 load_settings()
@@ -126,8 +135,16 @@ while running:
     # 3. Stick Preview Logic
     mapped_preview = [0] * 16
     for i in range(16):
-        src_id = CHANNEL_MAPS[i]
-        mapped_preview[i] = tuned_signals[src_id] if src_id < 23 else -32768
+        if i == SPLIT_CONFIG["target_ch"]:
+            s = SPLIT_CONFIG
+            p_raw = tuned_signals[s["pos_id"]] if s["pos_id"] < 23 else -32768
+            n_raw = tuned_signals[s["neg_id"]] if s["neg_id"] < 23 else -32768
+            p_tuned = get_tuned_val(p_raw, s["pos_center"], s["pos_reverse"])
+            n_tuned = get_tuned_val(n_raw, s["neg_center"], s["neg_reverse"])
+            mapped_preview[i] = max(-32768, min(32767, p_tuned + n_tuned))
+        else:
+            src_id = CHANNEL_MAPS[i]
+            mapped_preview[i] = tuned_signals[src_id] if src_id < 23 else -32768
 
     # 4. Rendering
     screen.blit(bg, (0, 0))
@@ -140,8 +157,8 @@ while running:
     # Debug Data Table
     debug_y = 85
     r_txt = debug_font.render(f"RAW ID  00:{raw_signals[0]:6d} 01:{raw_signals[1]:6d} 02:{raw_signals[2]:6d} 03:{raw_signals[3]:6d}", True, (255, 200, 100))
-    t_txt = debug_font.render(f"TUNED   ID0:{tuned_signals[0]:6d} ID1:{tuned_signals[1]:6d} ID2:{tuned_signals[2]:6d} ID3:{tuned_signals[3]:6d}", True, (100, 255, 100))
-    s_txt = debug_font.render(f"SENT    CH1:{str(ch_sent[0]):>6} CH2:{str(ch_sent[1]):>6} CH3:{str(ch_sent[2]):>6} CH4:{str(ch_sent[3]):>6}", True, (100, 180, 255))
+    t_txt = debug_font.render(f"TUNED  CH1:{mapped_preview[0]:6d} CH2:{mapped_preview[1]:6d} CH3:{mapped_preview[2]:6d} CH4:{mapped_preview[3]:6d}", True, (100, 255, 100))
+    s_txt = debug_font.render(f"SENT   CH1:{str(ch_sent[0]):>6} CH2:{str(ch_sent[1]):>6} CH3:{str(ch_sent[2]):>6} CH4:{str(ch_sent[3]):>6}", True, (100, 180, 255))
     screen.blit(r_txt, (SCREEN_WIDTH//2 - r_txt.get_width()//2, debug_y))
     screen.blit(t_txt, (SCREEN_WIDTH//2 - t_txt.get_width()//2, debug_y + 25))
     screen.blit(s_txt, (SCREEN_WIDTH//2 - s_txt.get_width()//2, debug_y + 50))
@@ -175,9 +192,8 @@ while running:
         settings_rect.x = max(settings_rect.x - 30, SCREEN_WIDTH - 190)
         
         # Draw settings and get feedback
-        # Returns: (which tab was clicked, if a slider/value inside a panel changed)
         new_clicked, settings_changed = draw_settings_panel(
-            screen, settings_rect, t_down, tx, ty, active_panel_index, raw_signals
+            screen, settings_rect, t_down, tx, ty, active_panel_index, raw_signals, tuned_signals
         )
         
         # If a slider was moved, sync immediately to C++
