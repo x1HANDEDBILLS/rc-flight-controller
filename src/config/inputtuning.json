@@ -10,7 +10,7 @@
         "expo": 0.0,
         "smoothing": 0.2,
         "global_rate": 1.0,
-        "cine_on": true,
+        "cine_on": false,
         "cine_speed": 10.0,
         "cine_accel": 6.0,
         "curve_lh_id": 0,

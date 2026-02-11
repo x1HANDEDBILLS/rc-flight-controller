@@ -22,6 +22,7 @@
 #include "InputMapper.h"
 #include "InputMixer.h"
 #include "crsf_sender.h"
+#include "crsf_parser.h"
 
 const std::string MAPPER_PATH = "/home/pi4/rc-flight-controller/src/config/inputmapper.json";
 const std::string TUNING_PATH = "/home/pi4/rc-flight-controller/src/config/inputtuning.json";
@@ -99,7 +100,7 @@ void socket_listener() {
                 else if (msg.find("RATE:") == 0)      g_sens = std::stof(msg.substr(5));
                 else if (msg.find("EXPO:") == 0)      g_expo = std::stof(msg.substr(5));
                 else if (msg.find("CURVE:") == 0)     g_curve = std::stoi(msg.substr(6));
-                else if (msg.find("SMOOTH:") == 0)    g_smooth = std::stof(msg.substr(7));
+                else if (msg.find("SMOOTH:") == 0)     g_smooth = std::stof(msg.substr(7));
                 else if (msg.find("CINE_ON:") == 0)   g_cine_on = (std::stoi(msg.substr(8)) == 1);
                 else if (msg.find("CINE_SPD:") == 0)  g_cine_spd = std::stof(msg.substr(9));
                 else if (msg.find("CINE_ACC:") == 0)  g_cine_acc = std::stof(msg.substr(9));
@@ -139,9 +140,25 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
+    // --- BAUD RATE SELECTION (MODIFIED FOR NOMAD) ---
+    // Default to 420000 (EdgeTX standard). Use argv[1] if Python passes a specific speed.
+    int baud_rate = 420000; 
+    if (argc > 1) {
+        try {
+            baud_rate = std::stoi(argv[1]);
+        } catch (...) {
+            baud_rate = 420000;
+        }
+    }
+
     if (SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0) return 1;
     
-    crsf_sender.begin(); 
+    // Pass the baud rate to the new CRSFSender::begin
+    if (!crsf_sender.begin(baud_rate)) {
+        std::cerr << "CRSF Error: Failed to open port at " << baud_rate << " baud." << std::endl;
+        return 1;
+    }
+
     load_system_config();
     std::thread listener_thread(socket_listener);
 
@@ -150,7 +167,7 @@ int main(int argc, char* argv[]) {
     LogicalSignals mapped_output;
     auto last_gui_write = std::chrono::steady_clock::now();
 
-    std::cout << "Engine Started at 1000Hz." << std::endl;
+    std::cout << "Engine Started at 1000Hz (Baud: " << baud_rate << ")." << std::endl;
 
     while (g_running) {
         auto frame_start = std::chrono::steady_clock::now();
@@ -184,12 +201,12 @@ int main(int argc, char* argv[]) {
             for (int i = 0; i < 6; i++) {
                 float dz = (i < 2) ? g_l_dz : (i < 4 ? g_r_dz : 0.05f);
                 apply_tuning(raw_signals[i], dz, g_sens, g_smooth, 
-                             g_curve, g_expo, g_cine_on, g_cine_spd, g_cine_acc,
-                             prev_vals[i], cine_vel[i], cine_pos[i], 0.001f);
+                               g_curve, g_expo, g_cine_on, g_cine_spd, g_cine_acc,
+                               prev_vals[i], cine_vel[i], cine_pos[i], 0.001f);
             }
         } else {
-            std::fill(raw_signals.begin(), raw_signals.end(), 0);
-            std::fill(true_raw.begin(), true_raw.end(), 0);
+            std::fill(raw_signals.begin(), raw_signals.end(), -32768);
+            std::fill(true_raw.begin(), true_raw.end(), -32768);
         }
 
         {
@@ -222,6 +239,7 @@ int main(int argc, char* argv[]) {
 
     // --- CLEAN SHUTDOWN ---
     std::cout << "Shutting down gracefully..." << std::endl;
+    crsf_sender.close_port();
     if (listener_thread.joinable()) listener_thread.join();
     if (controller) SDL_GameControllerClose(controller);
     SDL_Quit();
