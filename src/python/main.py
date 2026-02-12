@@ -7,7 +7,10 @@ import numpy as np
 from multiprocessing import Process, Pipe
 from logic_process import logic_process
 from render_core import create_gradient_bg
-from ui_components import draw_gear_button, draw_settings_panel, draw_controller_icon, PANEL_MAP
+from ui_components import (
+    draw_gear_button, draw_settings_panel, draw_controller_icon, 
+    PANEL_MAP, shared_keyboard, shared_keypad
+)
 from input_tuning_panel import load_settings, TUNING_STATE
 from mapper_panel import load_mapper_settings, get_tuned_val, CHANNEL_MAPS, SPLIT_CONFIG
 from config import *
@@ -19,8 +22,6 @@ ENGINE_ADDR = ("127.0.0.1", 5005)
 def sync_to_engine(retries=3, delay=1.0):
     """
     Sends the current mapping and tuning rules to the C++ engine.
-    This bridges the gap between Python (UI) and C++ (Flight Logic).
-    Added retries to ensure sync on startup if C++ listener not ready.
     """
     print("Syncing configs to C++ engine...")
     for attempt in range(retries):
@@ -39,23 +40,23 @@ def sync_to_engine(retries=3, delay=1.0):
                 f"RATE:{t['global_rate']}",
                 f"EXPO:{t['expo']}",
                 f"CINE_ON:{int(t['cine_on'])}",
-                f"CINE_SPD:{t['cine_speed']}",    # UPDATED: Replaced CINE_VAL with CINE_SPD
-                f"CINE_ACC:{t['cine_accel']}",   # UPDATED: Added CINE_ACC
+                f"CINE_SPD:{t['cine_speed']}", 
+                f"CINE_ACC:{t['cine_accel']}",
                 f"L_DZ:{round(t['left_deadzone'] / 10.0, 2)}",
                 f"R_DZ:{round(t['right_deadzone'] / 10.0, 2)}"
             ]
             for p_msg in params:
                 udp_sock.sendto(p_msg.encode(), ENGINE_ADDR)
             print("Sync complete.")
-            return True  # Success
+            return True 
 
         except Exception as e:
             print(f"UDP Sync Attempt {attempt+1} Error: {e}. Retrying in {delay}s...")
             time.sleep(delay)
-    print("Sync failed after retries. C++ may not be running or port issue.")
+    print("Sync failed after retries.")
     return False
 
-# Initialize configs and sync once on startup
+# Initialize configs and sync
 load_settings()
 load_mapper_settings()
 sync_to_engine()
@@ -65,12 +66,9 @@ parent_conn, child_conn = Pipe(False)
 p = Process(target=logic_process, args=(child_conn,), daemon=True)
 p.start()
 
-# --- REPLACED pygame.init() ---
 pygame.display.init()
 pygame.font.init()
-# ------------------------------
 
-# Use FULLSCREEN, DOUBLEBUF and HWSURFACE for Raspberry Pi performance
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.FULLSCREEN | pygame.DOUBLEBUF | pygame.HWSURFACE)
 pygame.mouse.set_visible(False)
 
@@ -84,14 +82,15 @@ settings_rect = pygame.Rect(SCREEN_WIDTH, 0, 190, SCREEN_HEIGHT)
 settings_visible = False
 active_panel_index = -1
 last_nav_time = 0
+ui_lock_time = 0   # <--- GLOBAL TOUCH SHIELD TIMER
 peak_latency = 0.0
 
 # Persistent Flight Data
 connected = 0
 flight_latency_ms = flight_rate_hz = 0.0
 raw_signals = [0] * 23 
-tuned_signals = [0] * 23  # Cleaned signals coming back from C++
-ch_sent = ["0"] * 16      # Radio protocol values
+tuned_signals = [0] * 23 
+ch_sent = ["0"] * 16
 
 clock = pygame.time.Clock()
 running = True
@@ -105,7 +104,19 @@ try:
         t_lat, t_down, tx, ty = latest
         peak_latency = max(peak_latency, t_lat)
 
-        # 2. Parse Telemetry from C++ Engine (/tmp/flight_status.txt)
+        now = time.time()
+        
+        # --- TOUCH SHIELD LOGIC ---
+        # Detect if an overlay was open in the PREVIOUS frame
+        prev_overlay_active = shared_keyboard.active or shared_keypad.active
+        
+        # Check if touch is currently locked (Grace period after UI changes)
+        is_locked = (now - ui_lock_time) < 0.3
+        
+        # This is the filtered signal we pass to UI elements
+        safe_t_down = t_down and not is_locked
+
+        # 2. Parse Telemetry from C++ Engine
         if os.path.exists('/tmp/flight_status.txt'):
             try:
                 with open('/tmp/flight_status.txt', 'r') as f:
@@ -113,20 +124,16 @@ try:
                     if content:
                         parts = content.split()
                         data = {p_item.split(':', 1)[0]: p_item.split(':', 1)[1] for p_item in parts if ':' in p_item}
-                        
                         for key, val in data.items():
                             if key.startswith('rawid'):
                                 idx = int(key.replace('rawid', ''))
                                 if idx < 23: raw_signals[idx] = int(float(val))
-                            
                             elif key.startswith('tunedid'):
                                 idx = int(key.replace('tunedid', ''))
                                 if idx < 23: tuned_signals[idx] = int(float(val))
-
                             elif key.startswith('ch'):
                                 idx = int(key.replace('ch', '')) - 1
                                 if idx < 16: ch_sent[idx] = val
-                        
                         if 'connected' in data: connected = int(float(data['connected']))
                         if 'latency_ms' in data: flight_latency_ms = float(data['latency_ms'])
                         if 'rate_hz' in data: flight_rate_hz = float(data['rate_hz'])
@@ -177,31 +184,33 @@ try:
         # Bottom Icons
         draw_controller_icon(screen, 20, SCREEN_HEIGHT - 75, connected == 1)
         
-        # Gear Button
+        # Gear Button (Uses safe_t_down)
         gear_rect = pygame.Rect(BTN_RECT)
-        gear_pressed = t_down and gear_rect.collidepoint(tx, ty)
+        gear_pressed = safe_t_down and gear_rect.collidepoint(tx, ty)
         draw_gear_button(screen, gear_rect, gear_pressed)
         
-        now = time.time()
         if gear_pressed and (now - last_nav_time) > 0.4:
             settings_visible = not settings_visible
             last_nav_time = now
+            ui_lock_time = now # Shield background when toggling sidebar
 
         # 5. Settings Sidebar & Sub-Panel Logic
         if settings_visible:
-            # Animate Sidebar sliding in
             settings_rect.x = max(settings_rect.x - 30, SCREEN_WIDTH - 190)
             
-            # Draw settings and get feedback
+            # Pass safe_t_down to the UI logic
             new_clicked, settings_changed = draw_settings_panel(
-                screen, settings_rect, t_down, tx, ty, active_panel_index, raw_signals, tuned_signals
+                screen, settings_rect, safe_t_down, tx, ty, active_panel_index, raw_signals, tuned_signals
             )
             
-            # If a slider was moved, sync immediately to C++
+            # Check if an overlay (keyboard/keypad) JUST closed
+            curr_overlay_active = shared_keyboard.active or shared_keypad.active
+            if prev_overlay_active and not curr_overlay_active:
+                ui_lock_time = now # Lock touch for 300ms so background doesn't click
+
             if settings_changed:
                 sync_to_engine()
 
-            # Handle Tab Switching and the Back Button
             if new_clicked != -1 and (now - last_nav_time) > 0.3:
                 if PANEL_MAP[new_clicked][0] == "Back":
                     settings_visible = False
@@ -209,8 +218,8 @@ try:
                 else:
                     active_panel_index = new_clicked
                 last_nav_time = now
+                ui_lock_time = now # Shield touch during tab switches
         else:
-            # Animate Sidebar sliding out
             settings_rect.x = min(settings_rect.x + 30, SCREEN_WIDTH)
             active_panel_index = -1
 
@@ -226,15 +235,12 @@ try:
         clock.tick(60)
 
 except KeyboardInterrupt:
-    print("\nCtrl+C caught — shutting down gracefully...")
+    print("\nShutting down gracefully...")
 
 finally:
-    print("Performing cleanup...")
     if p.is_alive():
         p.terminate()
         p.join(timeout=2.0)
-        if p.is_alive():
-            print("Warning: logic_process did not terminate cleanly.")
     pygame.quit()
     udp_sock.close()
     sys.exit(0)
